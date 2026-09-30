@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chrome</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --line: color-mix(in srgb, currentColor 18%, transparent);
+        --muted: color-mix(in srgb, currentColor 62%, transparent);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 14px;
+        font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      }
+      h1 { margin: 0 0 10px; font-size: 13px; font-weight: 600; letter-spacing: 0.01em; }
+      .row { display: flex; gap: 8px; }
+      input {
+        flex: 1;
+        min-width: 0;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
+      button {
+        padding: 7px 12px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-weight: 550;
+        cursor: pointer;
+      }
+      button:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+      button[disabled] { opacity: 0.5; cursor: default; }
+      .hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+      .status { margin: 12px 0 6px; color: var(--muted); }
+      .muted { color: var(--muted); }
+      .small { font-size: 12px; }
+      .error { color: #c0392b; }
+      ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+      li { border-top: 1px solid var(--line); padding-top: 8px; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: currentColor; opacity: 0.35; }
+      .dot.ready { background: #2e9e5b; opacity: 1; }
+      .dot.starting { background: #d3962f; opacity: 1; }
+      .dot.failed { background: #c0392b; opacity: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Chrome</h1>
+    <div class="row">
+      <input id="address" type="text" placeholder="example.com" autocomplete="off" spellcheck="false" />
+      <button id="go" type="button">Open</button>
+    </div>
+    <p class="hint">
+      Opens a page in the default session's window. Each agent session gets its own Chrome window,
+      on its own profile, that never comes to the front on its own. Activate Chrome yourself to watch.
+    </p>
+    <div class="status" id="status">…</div>
+    <ul id="sessions"></ul>
+    <p class="error" id="error" hidden></p>
+    <script src="./main.built.js"></script>
+  </body>
+</html>

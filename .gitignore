@@ -1,0 +1,8 @@
+node_modules/
+
+# Build output: rebuilt by `npm run build`.
+service/main.cjs
+service/xdg-open
+panel/main.built.js
+browsers.json
+xdg-open

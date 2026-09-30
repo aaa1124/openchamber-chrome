@@ -1,0 +1,47 @@
+{
+  "name": "openchamber-chrome",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenChamber browser provider that drives Google Chrome",
+  "type": "module",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=1.22.0"
+    },
+    "contributes": {
+      "panel": {
+        "id": "openchamber-chrome",
+        "name": "Chrome",
+        "icon": "icon.svg",
+        "entry": "panel/index.html"
+      },
+      "service": {
+        "entry": "service/main.cjs",
+        "runtime": "host",
+        "provides": [
+          "browser"
+        ]
+      },
+      "attach": false
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-provider.mjs",
+    "test:reconnect": "node scripts/test-reconnect.mjs",
+    "test:survival": "node scripts/test-survival.mjs",
+    "test:sessions": "node scripts/test-sessions.mjs",
+    "test:focus": "node scripts/test-focus.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  },
+  "devDependencies": {
+    "@openchamber/sdk": "2.0.4",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

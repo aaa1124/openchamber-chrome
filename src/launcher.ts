@@ -20,6 +20,7 @@
  * tests, and `OPENCHAMBER_CHROME_LAUNCHER` picks between them.
  */
 import fs from 'node:fs';
+import { randomInt } from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -36,6 +37,29 @@ export const resolveChromeExecutable = (): string | null =>
   CANDIDATE_BINARIES.find((candidate) => exists(candidate)) ?? null;
 
 const CANDIDATE_BUNDLES: readonly string[] = [CHROME_FOR_TESTING_BUNDLE, CHROME_BUNDLE];
+
+/**
+ * Keep the browser's User-Agent plausible while avoiding the same value on
+ * consecutive Chrome launches. The cursor starts at a random entry so a new
+ * service process does not always begin with the same value.
+ */
+const USER_AGENT_POOL = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+] as const;
+
+let userAgentCursor = randomInt(USER_AGENT_POOL.length);
+
+/** Returns the next launch User-Agent, without repeating until the pool wraps. */
+export const nextChromeUserAgent = (): string => {
+  const userAgent = USER_AGENT_POOL[userAgentCursor];
+  if (!userAgent) throw new Error('Chrome User-Agent pool is empty.');
+  userAgentCursor = (userAgentCursor + 1) % USER_AGENT_POOL.length;
+  return userAgent;
+};
 
 /** `/json/version` answers with the WebSocket URL while a debug port is live. */
 export const probeDebugPort = async (port: number, timeoutMs = 1_500): Promise<string | null> => {
@@ -89,7 +113,11 @@ export const launchChrome = async (options: {
   args: readonly string[];
 }): Promise<{ pid: number | null; viaLauncher: boolean }> => {
   const { executablePath, paths, args } = options;
-  const chromeArgs = [`--user-data-dir=${paths.profile}`, `--remote-debugging-port=${paths.port}`, ...args];
+  const chromeArgs = [
+    `--user-data-dir=${paths.profile}`,
+    `--remote-debugging-port=${paths.port}`,
+    ...args,
+  ];
 
   fs.mkdirSync(paths.profile, { recursive: true });
   fs.mkdirSync(paths.downloads, { recursive: true });
@@ -106,6 +134,10 @@ export const launchChrome = async (options: {
       'Close that window, then try again.';
     throw chromeError('already-running', message);
   }
+
+  // Only advance the rotation after all checks pass and Chrome is actually
+  // about to be started.
+  chromeArgs.push(`--user-agent=${nextChromeUserAgent()}`);
 
   if (LAUNCHER === 'open') {
     const bundle = CANDIDATE_BUNDLES.find((candidate) => exists(candidate)) ?? CHROME_BUNDLE;

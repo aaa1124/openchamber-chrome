@@ -126,6 +126,10 @@ launcher wants the opposite, and `scripts/patch-bundle.mjs` turns its signal
 handlers off at build time. `npm run test:survival` proves a window survives
 both SIGTERM and SIGKILL and that the next service adopts it.
 
+Each newly launched Chrome process receives a different plausible User-Agent
+from a rotating pool. Reconnecting to a Chrome window that survived a service
+restart leaves its existing User-Agent unchanged.
+
 If you launch Chrome on one of these profiles yourself, without the debug port,
 the provider cannot attach to it and says so: close that window and retry.
 

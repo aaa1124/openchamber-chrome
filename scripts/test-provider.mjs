@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { chromium } from 'playwright-core';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serviceEntry = path.join(root, 'service', 'main.cjs');
@@ -259,6 +260,41 @@ const main = async () => {
     'the panel state reads the session',
     state.body?.count >= 1 && mainSession.chrome === 'ready' && mainSession.pages >= 2,
     JSON.stringify(state.body).slice(0, 240),
+  );
+
+  // The User-Agent has to be Chrome's own: any `--user-agent` override empties
+  // the high-entropy client hints, which stock Chrome never does (see
+  // src/launcher.ts). Read both straight from the running window.
+  const versionBody = await fetch(`http://${HOST}:${mainSession.port}/json/version`)
+    .then((response) => response.json())
+    .catch(() => null);
+  const realVersion = typeof versionBody?.Browser === 'string' ? versionBody.Browser.replace(/^Chrome\//, '') : null;
+  const realMajor = typeof realVersion === 'string' ? realVersion.split('.')[0] : null;
+
+  const cdp = await chromium.connectOverCDP(`http://${HOST}:${mainSession.port}`);
+  const cdpPages = cdp.contexts()[0]?.pages() ?? [];
+  const probePage = cdpPages.find((candidate) => candidate.url().startsWith(pageUrl)) ?? cdpPages[0] ?? null;
+  const fingerprint = probePage
+    ? await probePage.evaluate(async () => {
+        const uad = navigator.userAgentData;
+        const high = uad ? await uad.getHighEntropyValues(['uaFullVersion', 'fullVersionList']) : null;
+        return {
+          userAgent: navigator.userAgent,
+          uaFullVersion: high?.uaFullVersion ?? null,
+          fullVersionList: high?.fullVersionList ?? [],
+        };
+      })
+    : null;
+
+  check(
+    'the User-Agent matches the running Chrome build',
+    Boolean(realMajor) && fingerprint !== null && fingerprint.userAgent.includes(`Chrome/${realMajor}.0.0.0`),
+    `UA ${fingerprint?.userAgent ?? '(none)'} for Chrome/${realVersion ?? '(unknown)'}`,
+  );
+  check(
+    'client hints report the running Chrome build',
+    fingerprint?.uaFullVersion === realVersion && fingerprint.fullVersionList.length > 0,
+    `uaFullVersion ${fingerprint?.uaFullVersion ?? '(none)'} fullVersionList ${JSON.stringify(fingerprint?.fullVersionList ?? [])}`,
   );
 };
 

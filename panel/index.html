@@ -51,6 +51,16 @@
       .dot.ready { background: #2e9e5b; opacity: 1; }
       .dot.starting { background: #d3962f; opacity: 1; }
       .dot.failed { background: #c0392b; opacity: 1; }
+      .section { margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+      .chat { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      select {
+        padding: 4px 6px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+      }
     </style>
   </head>
   <body>
@@ -60,11 +70,15 @@
       <button id="go" type="button">Open</button>
     </div>
     <p class="hint">
-      Opens a page in the default session's window. Each agent session gets its own Chrome window,
-      on its own profile, that never comes to the front on its own. Activate Chrome yourself to watch.
+      Opens a page in the default profile's window, the one you sign into once. Each profile has one
+      Chrome window that never comes to the front on its own; activate Chrome yourself to watch.
+      Chats use the default profile unless you pick another below.
     </p>
     <div class="status" id="status">…</div>
-    <ul id="sessions"></ul>
+    <h2 class="section">Profiles</h2>
+    <ul id="profiles"></ul>
+    <h2 class="section">Chats</h2>
+    <ul id="chats"></ul>
     <p class="error" id="error" hidden></p>
     <script src="./main.built.js"></script>
   </body>

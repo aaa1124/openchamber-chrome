@@ -13,18 +13,17 @@
  * window (same rendering, same screenshot), it is simply never activated. That
  * includes the provider's own `bringToFront` when it switches tabs: activation
  * is a property of the launch, so nothing this service does can pull the
- * window in front of the user. To watch a session's window, activate Chrome
+ * window in front of the user. To watch a profile's window, activate Chrome
  * yourself from the Dock.
  *
  * `spawn` stays available for Linux (no such activation problem) and for the
  * tests, and `OPENCHAMBER_CHROME_LAUNCHER` picks between them.
  */
 import fs from 'node:fs';
-import { randomInt } from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { CANDIDATE_BINARIES, CHROME_BUNDLE, CHROME_FOR_TESTING_BUNDLE, LAUNCHER, type SessionPaths } from './env.ts';
+import { CANDIDATE_BINARIES, CHROME_BUNDLE, CHROME_FOR_TESTING_BUNDLE, LAUNCHER, type ProfilePaths } from './env.ts';
 import { describeError, exists, sleep } from './util.ts';
 
 export type ChromeLaunchError = {
@@ -37,29 +36,6 @@ export const resolveChromeExecutable = (): string | null =>
   CANDIDATE_BINARIES.find((candidate) => exists(candidate)) ?? null;
 
 const CANDIDATE_BUNDLES: readonly string[] = [CHROME_FOR_TESTING_BUNDLE, CHROME_BUNDLE];
-
-/**
- * Keep the browser's User-Agent plausible while avoiding the same value on
- * consecutive Chrome launches. The cursor starts at a random entry so a new
- * service process does not always begin with the same value.
- */
-const USER_AGENT_POOL = [
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-] as const;
-
-let userAgentCursor = randomInt(USER_AGENT_POOL.length);
-
-/** Returns the next launch User-Agent, without repeating until the pool wraps. */
-export const nextChromeUserAgent = (): string => {
-  const userAgent = USER_AGENT_POOL[userAgentCursor];
-  if (!userAgent) throw new Error('Chrome User-Agent pool is empty.');
-  userAgentCursor = (userAgentCursor + 1) % USER_AGENT_POOL.length;
-  return userAgent;
-};
 
 /** `/json/version` answers with the WebSocket URL while a debug port is live. */
 export const probeDebugPort = async (port: number, timeoutMs = 1_500): Promise<string | null> => {
@@ -103,13 +79,35 @@ export const portListenerPid = async (port: number): Promise<number | null> => {
 };
 
 /**
+ * Whether the Chrome answering a debug port was started on this profile, read
+ * from that process's command line. Null when the owner cannot be inspected, so
+ * nothing is claimed either way.
+ */
+export const listenerUsesProfile = async (port: number, profile: string): Promise<boolean | null> => {
+  if (process.platform === 'win32') return null;
+  const pid = await portListenerPid(port);
+  if (pid === null) return null;
+  const command = await new Promise<string>((resolve) => {
+    const child = spawn('/bin/ps', ['-o', 'command=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let text = '';
+    child.stdout.on('data', (chunk) => {
+      text += chunk;
+    });
+    child.on('error', () => resolve(''));
+    child.on('close', () => resolve(text));
+  });
+  if (command.trim().length === 0) return null;
+  return command.includes(`--user-data-dir=${profile}`);
+};
+
+/**
  * Starts Chrome on a profile and waits until it answers. The returned handle is
  * for closing it later; whether the process was ours to begin with is decided
  * by the caller, not here.
  */
 export const launchChrome = async (options: {
   executablePath: string;
-  paths: SessionPaths;
+  paths: ProfilePaths;
   args: readonly string[];
 }): Promise<{ pid: number | null; viaLauncher: boolean }> => {
   const { executablePath, paths, args } = options;
@@ -134,10 +132,6 @@ export const launchChrome = async (options: {
       'Close that window, then try again.';
     throw chromeError('already-running', message);
   }
-
-  // Only advance the rotation after all checks pass and Chrome is actually
-  // about to be started.
-  chromeArgs.push(`--user-agent=${nextChromeUserAgent()}`);
 
   if (LAUNCHER === 'open') {
     const bundle = CANDIDATE_BUNDLES.find((candidate) => exists(candidate)) ?? CHROME_BUNDLE;
@@ -167,6 +161,29 @@ export const waitForDebugPort = async (port: number, timeoutMs = 25_000): Promis
   return null;
 };
 
+/** Signal 0 only asks whether the process exists. */
+const isAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * True once Chrome has quit: its debug port is silent and, when its pid is
+ * known, the process itself is gone. Chrome writes its profile out as it exits.
+ */
+export const chromeExited = async (port: number, pid: number | null, timeoutMs: number): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await probeDebugPort(port, 300)) === null && (pid === null || !isAlive(pid))) return true;
+    await sleep(300);
+  }
+  return false;
+};
+
 /**
  * Asks Chrome on a debug port to quit, then insists. Returns true when the port
  * stops answering. `pid` is the process to signal when it is known: the browser
@@ -193,9 +210,12 @@ export const quitChrome = async (port: number, pid: number | null, log: (message
     }
   };
   signal('SIGTERM');
-  const deadline = Date.now() + 8_000;
+  // The port stops answering as shutdown begins, but Chrome writes its profile
+  // (cookies included) only as it exits. Wait for the process itself, so the
+  // next launch never reads a profile that is still being written.
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    if ((await probeDebugPort(port, 300)) === null) return true;
+    if ((await probeDebugPort(port, 300)) === null && !isAlive(target)) return true;
     await sleep(300);
   }
   log('Chrome did not quit in time; forcing it');

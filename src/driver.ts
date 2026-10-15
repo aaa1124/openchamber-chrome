@@ -1,13 +1,13 @@
 /**
- * One Chrome window, for one agent session.
+ * One Chrome window, for one profile.
  *
- * The service holds one driver per session id (see sessions.ts). Each driver
- * owns exactly one window on its own profile and debug port, so two sessions
- * cannot see each other's tabs, cookies or logins, and neither can disturb the
- * other's page.
+ * The service holds one driver per profile (see sessions.ts). Each driver owns
+ * exactly one window on its own profile folder and debug port, so two profiles
+ * cannot see each other's tabs, cookies or logins. Chats that share a profile
+ * share its window, and therefore its tabs.
  *
  * The window outlives this service: the host stops an idle service, and a
- * session's window — a login, a half-filled form, twenty tabs — is still there
+ * profile's window — a login, a half-filled form, twenty tabs — is still there
  * when the next action arrives, because it is started by `open -g` rather than
  * as a child of anything here (see launcher.ts). That launcher choice is also
  * what keeps the window from jumping in front of the user.
@@ -21,10 +21,13 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 
-import { WINDOW_MODE, type SessionPaths } from './env.ts';
+import { WINDOW_MODE, type ProfileName, type ProfilePaths } from './env.ts';
 import {
   chromeError,
+  chromeExited,
   launchChrome,
+  listenerUsesProfile,
+  portListenerPid,
   probeDebugPort,
   quitChrome,
   resolveChromeExecutable,
@@ -56,7 +59,7 @@ export type ChromeState = 'stopped' | 'starting' | 'ready' | 'failed';
 const BLANK_URLS = ['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/', 'chrome://welcome/'] as const;
 
 export type DriverStatus = {
-  session: string;
+  name: ProfileName;
   chrome: ChromeState;
   connected: boolean;
   executable: string | null;
@@ -72,8 +75,8 @@ const isDisconnected = (error: unknown): boolean => {
 };
 
 export class ChromeDriver {
-  readonly session: string;
-  readonly paths: SessionPaths;
+  readonly name: ProfileName;
+  readonly paths: ProfilePaths;
 
   #browser: Browser | null = null;
   #context: BrowserContext | null = null;
@@ -90,8 +93,8 @@ export class ChromeDriver {
   #closed = false;
   #lastUsed = Date.now();
 
-  constructor(session: string, paths: SessionPaths) {
-    this.session = session;
+  constructor(name: ProfileName, paths: ProfilePaths) {
+    this.name = name;
     this.paths = paths;
   }
 
@@ -114,7 +117,7 @@ export class ChromeDriver {
 
   status(): DriverStatus {
     return {
-      session: this.session,
+      name: this.name,
       chrome: this.#state,
       connected: this.#context !== null,
       executable: this.#executable ?? resolveChromeExecutable(),
@@ -129,7 +132,7 @@ export class ChromeDriver {
   log(message: string): void {
     this.#eventLog.push(`${new Date().toISOString()} ${message}`);
     if (this.#eventLog.length > 50) this.#eventLog.shift();
-    console.error(`[openchamber-chrome] [${this.session}] ${message}`);
+    console.error(`[openchamber-chrome] [${this.name}] ${message}`);
   }
 
   recentLog(): string[] {
@@ -167,6 +170,15 @@ export class ChromeDriver {
     // duplicated: it is already listening on this session's port.
     const existing = await probeDebugPort(this.paths.port);
     if (existing) {
+      // The Chrome answering this port has to be this profile's own. Attaching to
+      // another one would put this profile's logins and tabs in that window.
+      if ((await listenerUsesProfile(this.paths.port, this.paths.profile)) === false) {
+        this.#state = 'failed';
+        this.#lastError =
+          `Port ${this.paths.port} is answered by a Chrome that is not using the ${this.name} profile. ` +
+          'Close that window, or set OPENCHAMBER_CHROME_DEBUG_PORT to another port.';
+        throw chromeError('already-running', this.#lastError);
+      }
       this.log(`reconnecting to the Chrome already listening on ${this.paths.port}`);
       await this.#attach(existing);
       return;
@@ -383,30 +395,47 @@ export class ChromeDriver {
   }
 
   /**
-   * Ends this session: the CDP client disconnects. With `hard`, a Chrome this
-   * session is responsible for is asked to quit as well.
+   * Ends this profile's use: the CDP client disconnects. With `hard`, Chrome is
+   * asked to close itself, and signalled only if it does not.
    */
   async close(hard = false): Promise<void> {
     this.#closed = true;
     const context = this.#context;
     const browser = this.#browser;
     const pid = this.#chromePid;
+    // Found before anything asks Chrome to quit: once it is shutting down, its port goes quiet.
+    const listener = hard ? (pid ?? (await portListenerPid(this.paths.port))) : null;
     this.#context = null;
     this.#browser = null;
     this.#lastActivated = null;
     this.#chromePid = null;
     this.#state = 'stopped';
 
+    if (hard && browser) {
+      // Chrome asked to close itself over DevTools exits cleanly and writes its
+      // profile out, cookies included. A signal can lose the last changes.
+      await browser
+        .newBrowserCDPSession()
+        .then((session) => session.send('Browser.close'))
+        .catch(() => undefined);
+    }
     try {
       await Promise.race([browser?.close() ?? context?.close() ?? Promise.resolve(), sleep(4_000)]);
     } catch (error) {
       this.log(`detaching from Chrome failed: ${describeError(error)}`);
     }
     if (!hard) return;
-    const closed = await quitChrome(this.paths.port, pid, (message: string) => this.log(message));
-    if (!closed) {
+    if (listener === null) {
       // Nothing was listening: no window of ours to close.
       this.log('no window to close for this session');
+      return;
     }
+    if (await chromeExited(this.paths.port, listener, 15_000)) {
+      this.log('closed Chrome cleanly');
+      return;
+    }
+    // Still running after a clean close was asked for: stop it the blunt way.
+    const closed = await quitChrome(this.paths.port, pid, (message: string) => this.log(message));
+    if (!closed) this.log('Chrome did not quit');
   }
 }

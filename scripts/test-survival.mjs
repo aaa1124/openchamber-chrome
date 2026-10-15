@@ -177,7 +177,7 @@ try {
   check('the same tab is still addressable after both stops', snapshot.body?.ok === true, JSON.stringify(snapshot.body).slice(0, 240));
   check('it is still the page the session left', (snapshot.body?.data?.text ?? '').includes('signed in'), snapshot.body?.data?.text);
   const state = await request('GET', '/state');
-  check('the service reports it reconnected, not launched', (state.body?.sessions ?? []).some((session) => (session.log ?? []).some((line) => line.includes('reconnecting'))));
+  check('the service reports it reconnected, not launched', (state.body?.profiles ?? []).some((entry) => (entry.log ?? []).some((line) => line.includes('reconnecting'))));
   check('exactly one Chrome is running for the profile', (await countChrome()) > 0 && (await countChrome()) < 40, String(await countChrome()));
 
   // 5. A window no service started is not this service's to close, and a

@@ -133,7 +133,9 @@ try {
   //    the provider's own profile and debug port.
   chrome = spawn(
     CHROME,
-    [`--user-data-dir=${PROFILE}`, `--remote-debugging-port=${DEBUG_PORT}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
+    // The default profile's folder: the service attaches only to a Chrome whose
+    // profile folder reports the port it is on.
+    [`--user-data-dir=${path.join(PROFILE, 'chrome')}`, `--remote-debugging-port=${DEBUG_PORT}`, '--no-first-run', '--no-default-browser-check', 'about:blank'],
     { stdio: 'ignore', detached: false },
   );
   check('a Chrome window is listening on the provider port', await waitFor(probeDebugPort), `port ${DEBUG_PORT}`);
@@ -154,7 +156,7 @@ try {
   check('the answer names a tab in that window', typeof snapshot.body?.data?.tabs?.[0]?.id === 'string');
 
   const state = await request('GET', '/state');
-  const session = (state.body?.sessions ?? [])[0] ?? {};
+  const session = (state.body?.profiles ?? []).find((entry) => entry.name === 'default') ?? {};
   check('the service reports a ready Chrome', session.chrome === 'ready', JSON.stringify(state.body).slice(0, 240));
   check(
     'the service says it reconnected',

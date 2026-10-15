@@ -6,14 +6,16 @@
  * nothing else; every path below has a sane default so the provider can also
  * be run by hand (see scripts/test-provider.mjs).
  *
- * Layout, so a session profile is never nested inside another profile:
+ * Layout, so one profile is never nested inside another:
  *
  *   ~/OpenChamberChromeProfile/            the base directory
- *   ├── chrome/                            the default window's Chrome profile
- *   ├── downloads/                         the default window's downloads
- *   └── sessions/<name>/chrome/            one profile per agent session
+ *   ├── chrome/                            the default profile's Chrome data
+ *   ├── downloads/                         the default profile's downloads
+ *   ├── chats.json                         which profile each agent chat uses
+ *   └── profiles/<name>/                   the other profiles (work, personal)
+ *       ├── chrome/
+ *       └── downloads/
  */
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -63,7 +65,7 @@ const DEBUG_PORT_BASE = (() => {
 /** How many providers may run at once before the least recently used one is closed. */
 export const MAX_INSTANCES = (() => {
   const raw = Number(process.env.OPENCHAMBER_CHROME_MAX_INSTANCES);
-  return Number.isInteger(raw) && raw > 0 && raw <= 64 ? raw : 8;
+  return Number.isInteger(raw) && raw > 0 && raw <= 64 ? raw : 16;
 })();
 
 /** How long an untouched instance is kept before its window is closed. */
@@ -81,43 +83,40 @@ export const INSTANCE_IDLE_MS = (() => {
 export const WINDOW_MODE: 'visible' | 'headless' =
   process.env.OPENCHAMBER_CHROME_HEADLESS === '1' ? 'headless' : 'visible';
 
-export type SessionPaths = {
-  /** Enough of the session id to read in a path, plus a hash so it is unique. */
-  name: string;
+/**
+ * The three profiles. `default` keeps the folder earlier versions used, so the
+ * logins already in it survive; the others sit beside it under profiles/.
+ */
+export const PROFILE_NAMES = ['default', 'work', 'personal'] as const;
+export type ProfileName = (typeof PROFILE_NAMES)[number];
+export const DEFAULT_PROFILE: ProfileName = 'default';
+
+export const isProfileName = (value: unknown): value is ProfileName =>
+  typeof value === 'string' && (PROFILE_NAMES as readonly string[]).includes(value);
+
+export type ProfilePaths = {
+  name: ProfileName;
+  /** The folder holding the profile's Chrome data and downloads. */
   directory: string;
+  /** Chrome's user-data-dir: cookies, logins and history live here. */
   profile: string;
   downloads: string;
   port: number;
 };
 
 /**
- * Where a session's Chrome lives. One profile per session means one cookie jar
- * per session: two agents signed into the same site do not fight over it, and
- * neither sees the other's session. A null session id (a CLI call) keeps the
- * long-standing single profile, so an existing install keeps its logins.
+ * Where a profile's Chrome lives. Every profile has the same layout and a debug
+ * port of its own, counted from the base port, so each one finds its own window
+ * again on the same port after a restart.
  */
-export const sessionPaths = (sessionId: string | null): SessionPaths => {
-  if (sessionId === null) {
-    return {
-      name: 'default',
-      directory: BASE_DIR,
-      profile: path.join(BASE_DIR, 'chrome'),
-      downloads: path.join(BASE_DIR, 'downloads'),
-      port: DEBUG_PORT_BASE,
-    };
-  }
-  const readable = sessionId.replace(/[^A-Za-z0-9_-]/g, '').slice(-24) || 'session';
-  const hash = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 6);
-  const name = `${readable}-${hash}`;
-  const directory = path.join(BASE_DIR, 'sessions', name);
+export const profilePaths = (name: ProfileName): ProfilePaths => {
+  const directory = name === DEFAULT_PROFILE ? BASE_DIR : path.join(BASE_DIR, 'profiles', name);
   return {
     name,
     directory,
     profile: path.join(directory, 'chrome'),
     downloads: path.join(directory, 'downloads'),
-    // Deterministic and stable across restarts, so a surviving window is found
-    // again on the port it is already listening on.
-    port: DEBUG_PORT_BASE + 1 + (Number.parseInt(hash, 16) % 500),
+    port: DEBUG_PORT_BASE + PROFILE_NAMES.indexOf(name),
   };
 };
 

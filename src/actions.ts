@@ -5,9 +5,9 @@
  * so an agent prompt written against either works. Errors say what to do
  * differently, because the agent reads them.
  *
- * Tabs belong to a session. The provider mints a tab id as `<session>:<target>`
- * and refuses a tab id minted for another session, so two sessions cannot act
- * on each other's pages even if an id is copied between them.
+ * Tabs belong to a profile. The provider mints a tab id as `<hash of the
+ * profile>:<target>` and refuses a tab id minted for another profile, so two
+ * profiles cannot act on each other's pages even if an id is copied between them.
  */
 import type { Page } from 'playwright-core';
 import { createHash } from 'node:crypto';
@@ -90,7 +90,7 @@ const snapshotPage = async (page: Page, selector: string | undefined): Promise<S
 const scrollState = async (page: Page): Promise<{ scrollY: number; maxScrollY: number }> =>
   page.evaluate(readScrollState);
 
-/** One session's browser, plus the tab-id naming this provider puts on it. */
+/** One profile's window, plus the tab-id naming this provider puts on it. */
 class Session {
   readonly key: string;
   readonly prefix: string;
@@ -99,14 +99,14 @@ class Session {
   constructor(key: string, driver: ChromeDriver) {
     this.key = key;
     this.#driver = driver;
-    // A short opaque prefix, so a tab id reads cleanly and two sessions cannot
+    // A short opaque prefix, so a tab id reads cleanly and two profiles cannot
     // mint the same one: `a1b2c3:4AC85E5B…`.
     this.prefix = `${createHash('sha256').update(key).digest('hex').slice(0, 6)}:`;
   }
 
   /**
-   * The tab an action names. A `tabId` without this session's prefix belongs to
-   * another session's window and is refused rather than followed; without a `tabId`
+   * The tab an action names. A `tabId` without this profile's prefix belongs to
+   * another profile's window and is refused rather than followed; without a `tabId`
    * the tab that was activated last answers.
    */
   async resolve(tabId: string | undefined): Promise<{ page: Page; driver: ChromeDriver }> {
@@ -126,7 +126,7 @@ class Session {
     if (tabId === undefined) return undefined;
     if (!tabId.startsWith(this.prefix)) {
       throw new Error(
-        `Tab ${tabId} belongs to another session's window. Take a snapshot here to list this session's tabs, then use one of those ids.`,
+        `Tab ${tabId} belongs to another profile's window. Take a snapshot here to list this profile's tabs, then use one of those ids.`,
       );
     }
     return tabId.slice(this.prefix.length);
@@ -499,11 +499,11 @@ const handleResize = async (
 };
 
 export const runAction = async (
-  sessionKey: string,
+  profile: string,
   driver: ChromeDriver,
   request: BrowserProviderRequest,
 ): Promise<BrowserProviderResult> => {
-  const session = new Session(sessionKey, driver);
+  const session = new Session(profile, driver);
   switch (request.action) {
     case 'browser.open':
       return handleOpen(session, request.parameters);

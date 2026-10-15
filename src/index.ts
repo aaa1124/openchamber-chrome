@@ -1,6 +1,6 @@
 /**
  * The service OpenChamber starts: a loopback HTTP server holding one Chrome
- * window per agent session.
+ * window per profile (there are three; see env.ts).
  *
  * Wire contract (packages/sdk/GUEST_SERVICES.md):
  * - `GET /health` answers 200 once the process is up. It never starts Chrome,
@@ -8,14 +8,15 @@
  *   would look like a crash.
  * - `POST /browser-control` takes one `browser.*` action the host already
  *   validated, and answers `{ ok: true, data }` or `{ ok: false, error }`.
- *   Every action carries the session it came from; that is what picks the
- *   window (see sessions.ts).
- * - `GET /state` lists the sessions that currently have a window.
- * - `POST /navigate` opens a page in the default session, for the panel.
+ *   Every action carries the chat it came from; that chat's profile picks the
+ *   window (see chats.ts and sessions.ts).
+ * - `GET /state` lists the profiles and the chats that use them.
+ * - `POST /chat-profile` points a chat at one of the profiles, for the panel.
+ * - `POST /navigate` opens a page in the default profile, for the panel.
  *
  * Every request, ready included, needs the host's bearer token. The service
- * binds 127.0.0.1 only. Actions run one at a time per session: two agent
- * actions in the same session would fight over the same window.
+ * binds 127.0.0.1 only. Actions run one at a time per profile: two actions on
+ * the same profile would fight over the same window.
  */
 import http from 'node:http';
 import path from 'node:path';
@@ -25,21 +26,22 @@ import { readBrowserProviderRequest, type BrowserProviderResult } from '@opencha
 
 import { runAction } from './actions.ts';
 import { isChromeLaunchError } from './launcher.ts';
-import { sessions } from './sessions.ts';
-import { HOSTED, SERVICE_PORT, SERVICE_TOKEN } from './env.ts';
+import { profiles } from './sessions.ts';
+import { chats } from './chats.ts';
+import { HOSTED, PROFILE_NAMES, SERVICE_PORT, SERVICE_TOKEN, isProfileName } from './env.ts';
 import { describeError } from './util.ts';
 
 const log = (message: string): void => {
   console.error(`[openchamber-chrome] ${message}`);
 };
 
-/** One action at a time per session; different sessions run side by side. */
+/** One action at a time per profile; different profiles run side by side. */
 const queues = new Map<string, Promise<void>>();
-const serialize = <T>(session: string, task: () => Promise<T>): Promise<T> => {
-  const previous = queues.get(session) ?? Promise.resolve();
+const serialize = <T>(profile: string, task: () => Promise<T>): Promise<T> => {
+  const previous = queues.get(profile) ?? Promise.resolve();
   const next = previous.then(task, task);
   queues.set(
-    session,
+    profile,
     next.then(
       () => undefined,
       () => undefined,
@@ -86,9 +88,9 @@ const handleBrowserControl = async (body: string): Promise<{ status: number; pay
     return { status: 400, payload: { ok: false, error: 'Not a browser action' } };
   }
   const sessionId = request.context.sessionId;
-  const driver = sessions.for(sessionId);
+  const driver = profiles.for(sessionId);
   try {
-    const result = await serialize(driver.session, () => runAction(driver.session, driver, request));
+    const result = await serialize(driver.name, () => runAction(driver.name, driver, request));
     return { status: 200, payload: result };
   } catch (error) {
     driver.log(`${request.action} failed: ${providerError(error)}`);
@@ -96,23 +98,41 @@ const handleBrowserControl = async (body: string): Promise<{ status: number; pay
   }
 };
 
-const handleState = (): unknown => {
-  const sessionsState = sessions.list();
-  return {
-    ok: true,
-    count: sessionsState.length,
-    sessions: sessionsState.map((entry) => ({
-      session: entry.session,
-      chrome: entry.status.chrome,
-      connected: entry.status.connected,
-      pages: entry.status.pages,
-      profile: entry.status.profile,
-      port: entry.status.port,
-      lastError: entry.status.lastError,
-      idleSeconds: Math.round(entry.idleMs / 1_000),
-      log: entry.recentLog,
-    })),
-  };
+const handleState = (): unknown => ({
+  ok: true,
+  profiles: profiles.list().map((entry) => ({
+    name: entry.name,
+    chrome: entry.status.chrome,
+    connected: entry.status.connected,
+    pages: entry.status.pages,
+    profile: entry.status.profile,
+    port: entry.status.port,
+    lastError: entry.status.lastError,
+    idleSeconds: Math.round(entry.idleMs / 1_000),
+    log: entry.recentLog,
+  })),
+  chats: chats.list(),
+});
+
+/** Points a chat at a profile. The choice is kept across restarts (see chats.ts). */
+const handleChatProfile = (body: string): { status: number; payload: unknown } => {
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    // Refused below.
+  }
+  const fields: { sessionId?: unknown; profile?: unknown } =
+    Object(parsed) === parsed && parsed !== null ? (parsed as { sessionId?: unknown; profile?: unknown }) : {};
+  const { sessionId, profile } = fields;
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 1024) {
+    return { status: 400, payload: { ok: false, error: 'sessionId is required' } };
+  }
+  if (!isProfileName(profile)) {
+    return { status: 400, payload: { ok: false, error: `profile must be one of ${PROFILE_NAMES.join(', ')}` } };
+  }
+  chats.assign(sessionId, profile);
+  return { status: 200, payload: { ok: true, sessionId, profile } };
 };
 
 const handleNavigate = async (body: string): Promise<{ status: number; payload: unknown }> => {
@@ -134,10 +154,10 @@ const handleNavigate = async (body: string): Promise<{ status: number; payload: 
     return { status: 400, payload: { ok: false, error: `${target} is not a URL` } };
   }
 
-  // The panel speaks for the default session: the profile a person set up by
-  // signing in, which the CLI and session-less actions also use.
-  const driver = sessions.for(null);
-  return serialize(driver.session, async () => {
+  // The panel speaks for the default profile: the one a person signs into once,
+  // which the CLI and chat-less actions also use.
+  const driver = profiles.for(null);
+  return serialize(driver.name, async () => {
     const opened = await driver.openTab(target);
     await driver.waitForSettle(opened.page, 8_000);
     return { status: 200, payload: { ok: true, url: opened.page.url() } };
@@ -157,6 +177,13 @@ export const createService = (): http.Server =>
     }
     if (url.pathname === '/state' && request.method === 'GET') {
       answer(response, 200, handleState());
+      return;
+    }
+    if (url.pathname === '/chat-profile' && request.method === 'POST') {
+      void readBody(request)
+        .then((body) => handleChatProfile(body))
+        .then(({ status, payload }) => answer(response, status, payload))
+        .catch((error: unknown) => answer(response, 500, { ok: false, error: providerError(error) }));
       return;
     }
     if (url.pathname === '/navigate' && request.method === 'POST') {
@@ -200,7 +227,7 @@ const stop = (cause: string, closeWindows: boolean): void => {
   log(`stopping (${cause})`);
   const finish = (): never => process.exit(0);
   if (closeWindows) {
-    void sessions.closeAll({ hard: true }).then(finish, finish);
+    void profiles.closeAll({ hard: true }).then(finish, finish);
     setTimeout(finish, 30_000).unref();
     return;
   }

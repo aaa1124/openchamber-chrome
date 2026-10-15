@@ -192,7 +192,7 @@ const main = async () => {
 
   const opened = await action('browser.open', { url: pageUrl });
   check('browser.open opens a background tab', opened.body?.ok === true && typeof opened.body.data?.tabId === 'string', JSON.stringify(opened.body).slice(0, 300));
-  check('the tab id names its session', /^[0-9a-f]{6}:[0-9A-F]{32}$/.test(opened.body?.data?.tabId ?? ''), opened.body?.data?.tabId);
+  check('the tab id names its profile', /^[0-9a-f]{6}:[0-9A-F]{32}$/.test(opened.body?.data?.tabId ?? ''), opened.body?.data?.tabId);
   const tabId = opened.body?.data?.tabId;
 
   const settled = await action('browser.open', { url: pageUrl });
@@ -255,10 +255,10 @@ const main = async () => {
   check('a missing element explains itself', badSelector.body?.ok === false && String(badSelector.body.error).includes('Could not click'), JSON.stringify(badSelector.body).slice(0, 240));
 
   const state = await request('GET', '/state');
-  const mainSession = (state.body?.sessions ?? [])[0] ?? {};
+  const mainSession = (state.body?.profiles ?? []).find((entry) => entry.name === 'default') ?? {};
   check(
-    'the panel state reads the session',
-    state.body?.count >= 1 && mainSession.chrome === 'ready' && mainSession.pages >= 2,
+    'the panel state reads the default profile',
+    (state.body?.profiles ?? []).length === 3 && mainSession.chrome === 'ready' && mainSession.pages >= 2,
     JSON.stringify(state.body).slice(0, 240),
   );
 

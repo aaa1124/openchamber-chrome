@@ -1,90 +1,59 @@
 /**
- * One Chrome per agent session, kept in one place.
+ * The three profiles, one Chrome window each.
  *
  * OpenChamber runs a single service for the browser provider and stamps every
- * action with the session it came from, so this is where that stamp turns into
- * a browser: a session id maps to its own driver, its own profile, its own
- * debug port, and therefore its own cookies and logins. Nothing is shared
- * between two sessions.
+ * action with the chat it came from. A chat uses one profile: the default one,
+ * unless someone picked another for that chat in the panel (see chats.ts). Every
+ * chat on a profile shares that profile's window, cookies and tabs. Two profiles
+ * never share anything.
  *
- * A null session id — an action sent from the CLI, or a host that has no
- * session — keeps the long-standing single profile, so an existing install
- * keeps its logins.
- *
- * Windows are closed when a session has been untouched for a while, and the
- * least recently used ones go first when too many are open, because each
- * visible window is a real Chrome. Closing a window is the only thing that
- * takes a login away; it is never done implicitly to a session that is in use.
+ * Windows are kept after use, and closed only on shutdown when asked to
+ * (OPENCHAMBER_CHROME_CLOSE_ON_STOP=1). A profile's window is one Chrome, so it
+ * is never started twice.
  */
-import { MAX_INSTANCES, sessionPaths } from './env.ts';
+import { PROFILE_NAMES, DEFAULT_PROFILE, profilePaths, type ProfileName } from './env.ts';
 import { ChromeDriver } from './driver.ts';
+import { chats } from './chats.ts';
 
-const DEFAULT_SESSION = 'shared';
+class ProfileRegistry {
+  readonly #drivers: Map<ProfileName, ChromeDriver>;
 
-const keyOf = (sessionId: string | null): string => sessionId ?? DEFAULT_SESSION;
+  constructor() {
+    // Creating a driver starts nothing; Chrome starts on the first action.
+    this.#drivers = new Map(PROFILE_NAMES.map((name) => [name, new ChromeDriver(name, profilePaths(name))] as const));
+  }
 
-class SessionRegistry {
-  #drivers = new Map<string, ChromeDriver>();
-  #sweeper: NodeJS.Timeout | null = null;
-
-  /** The driver for a session, created on first use. */
-  for(sessionId: string | null): ChromeDriver {
-    const key = keyOf(sessionId);
-    let driver = this.#drivers.get(key);
-    if (driver) {
-      driver.touch();
-      return driver;
-    }
-    driver = new ChromeDriver(key, sessionPaths(sessionId));
-    this.#drivers.set(key, driver);
-    driver.touch();
-    this.#ensureSweeper();
+  #get(name: ProfileName): ChromeDriver {
+    const driver = this.#drivers.get(name);
+    if (!driver) throw new Error(`Unknown profile ${name}`);
     return driver;
   }
 
-  /** Every session that currently has a window, most recently used first. */
-  list(): Array<{ session: string; status: ReturnType<ChromeDriver['status']>; recentLog: string[]; idleMs: number }> {
-    return [...this.#drivers.values()]
-      .sort((left, right) => left.idleMs - right.idleMs)
-      .map((driver) => ({
-        session: driver.session,
-        status: driver.status(),
-        recentLog: driver.recentLog().slice(-6),
-        idleMs: driver.idleMs,
-      }));
+  /** The driver for a profile, marked as used. */
+  driver(name: ProfileName): ChromeDriver {
+    const driver = this.#get(name);
+    driver.touch();
+    return driver;
   }
 
-  /** Stops a session's window now; used by shutdown and by the instance cap. */
-  async close(session: string, options: { hard?: boolean; forget?: boolean } = {}): Promise<void> {
-    const driver = this.#drivers.get(session);
-    if (!driver) return;
-    if (options.forget !== false) this.#drivers.delete(session);
-    await driver.close(options.hard === true);
+  /** The driver for the profile a chat uses. A null chat (CLI, the panel's Open button) uses the default. */
+  for(sessionId: string | null): ChromeDriver {
+    return this.driver(sessionId === null ? DEFAULT_PROFILE : chats.profileOf(sessionId));
   }
 
+  /** Every profile, in the order they are named, whether or not its window is open. */
+  list(): Array<{ name: ProfileName; status: ReturnType<ChromeDriver['status']>; recentLog: string[]; idleMs: number }> {
+    return PROFILE_NAMES.map((name) => {
+      const driver = this.#get(name);
+      return { name, status: driver.status(), recentLog: driver.recentLog().slice(-6), idleMs: driver.idleMs };
+    });
+  }
+
+  /** Stops every window this service has open; used by shutdown. */
   async closeAll(options: { hard?: boolean } = {}): Promise<void> {
-    const sessions = [...this.#drivers.keys()];
-    await Promise.all(sessions.map((session) => this.close(session, options)));
-  }
-
-  #ensureSweeper(): void {
-    if (this.#sweeper) return;
-    this.#sweeper = setInterval(() => {
-      void this.#sweep();
-    }, 60_000);
-    this.#sweeper.unref();
-  }
-
-  async #sweep(): Promise<void> {
-    // Windows are not closed for being idle: that is the point of them. Only
-    // the instance cap closes anything, and it takes the least recently used.
-    const overflow = this.list().slice(MAX_INSTANCES);
-    for (const entry of overflow) {
-      await this.close(entry.session, { hard: true });
-    }
+    const open = [...this.#drivers.values()].filter((driver) => driver.status().chrome !== 'stopped');
+    await Promise.all(open.map((driver) => driver.close(options.hard === true)));
   }
 }
 
-export const sessions = new SessionRegistry();
-
-export { DEFAULT_SESSION };
+export const profiles = new ProfileRegistry();

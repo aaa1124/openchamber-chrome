@@ -27,7 +27,7 @@ const PORT_REQUEST = '0';
 const READY_FILE = path.join(os.tmpdir(), `oc-focus-port-${randomBytes(6).toString('hex')}`);
 const TOKEN = randomBytes(16).toString('hex');
 const PROFILE = mkdtempSync(path.join(os.tmpdir(), 'oc-focus-run-'));
-/** Far below the provider's own range (9223 + session offsets), so a window the user is running cannot share a port with this test. */
+/** Far below the provider's own ports (9223 and up), so a window the user is running cannot share a port with this test. */
 const DEBUG_BASE = 7000 + Math.floor(Math.random() * 100);
 
 let port = 0;
@@ -143,6 +143,8 @@ try {
 
   const SESSION_A = 'ses_focus0000000000000000000';
   const SESSION_B = 'ses_other11111111111111111111';
+  // Chat B is pointed at the work profile, so the two chats open two windows.
+  await request('POST', '/chat-profile', { sessionId: SESSION_B, profile: 'work' });
 
   const opened = await staysInBackground('starting a window does not come to the front', () =>
     action(SESSION_A, 'browser.open', { url: 'https://example.com' }),
@@ -154,7 +156,8 @@ try {
 
   check('both sessions got their own tab', opened.result.body?.ok === true && second.result.body?.ok === true);
   const state = await request('GET', '/state');
-  check('two sessions are reported', state.body?.count === 2, JSON.stringify(state.body?.count));
+  const openWindows = (state.body?.profiles ?? []).filter((entry) => entry.chrome !== 'stopped').length;
+  check('two profile windows are open', openWindows === 2, JSON.stringify((state.body?.profiles ?? []).map((entry) => [entry.name, entry.chrome])));
 } catch (error) {
   check('the focus test completed', false, error instanceof Error ? error.stack : String(error));
 } finally {

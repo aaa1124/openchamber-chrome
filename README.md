@@ -59,9 +59,12 @@ some other tab.
 
 ## The windows
 
-Each agent session gets **its own Chrome window, on its own profile**. Two
-sessions working at once cannot see each other's tabs, cookies or logins, and a
-tab id from one session is refused by the other rather than followed.
+There are **three profiles**, `default`, `work` and `personal`, and each has one
+Chrome window of its own. An agent chat uses `default` unless you point it at
+another profile in the panel. Chats on the same profile share that window, its
+cookies and its tabs. Two profiles never see each other's tabs, cookies or
+logins, and a tab id from one profile is refused by the other rather than
+followed.
 
 They also never pull themselves in front of you, and if you would rather not see
 them at all, set `OPENCHAMBER_CHROME_HEADLESS=1`: the same rendering and the
@@ -79,31 +82,40 @@ the agent opens a tab, not even when it switches tabs. Measured on this machine,
 | `open -g` (what ships) | **no** | **no** | **no** |
 | off-screen position | yes | yes | yes |
 
-To watch a session work, activate Chrome yourself from the Dock. The extension's
-panel in the rail lists every session that has a window, with its tab count and
-port.
+To watch a profile work, activate Chrome yourself from the Dock. The extension's
+panel in the rail lists the three profiles with their tab counts and ports, and
+the chats that have used the browser, each with a profile picker.
 
-A tab id carries its session (`a1b2c3:4AC85E5B…`), so the agent always knows
+A tab id carries its profile (`a1b2c3:4AC85E5B…`), so the agent always knows
 which window it is talking to, and an id from another window is refused.
 
-| Session | Window |
+| Chat | Window |
 |---|---|
-| An agent session | Its own window, profile and cookie jar. |
-| No session (CLI, the panel's Open button) | The **default** window — the one you can sign into once and share. |
+| An agent chat, not pointed elsewhere | The **default** window, the one you sign into once and share. |
+| An agent chat pointed at `work` or `personal` in the panel | That profile's window, with its own logins. |
+| No chat (CLI, the panel's Open button) | The **default** window. |
 
 Windows are kept, not thrown away: the host stops the service after ten idle
-minutes and the windows stay where they are, logins and all. Up to
-`OPENCHAMBER_CHROME_MAX_INSTANCES` (8) are kept; past that, the least recently
-used one is closed.
+minutes and the windows stay where they are, logins and all. A chat's choice of
+profile is kept across restarts, for the 50 most recent chats.
 
 ### The profiles
 
 ```
 ~/OpenChamberChromeProfile/
-├── chrome/                    the default window's Chrome profile
-├── downloads/                 the default window's downloads
-└── sessions/<session>/chrome/ one profile per agent session
+├── chrome/                    the default profile's Chrome data
+├── downloads/                 the default profile's downloads
+├── chats.json                 which profile each chat uses
+└── profiles/
+    ├── work/chrome/           the work profile's Chrome data
+    ├── work/downloads/
+    ├── personal/chrome/       the personal profile's Chrome data
+    └── personal/downloads/
 ```
+
+The default profile keeps the folder earlier versions used, so your logins are
+where they were. Folders from earlier per-chat profiles (`sessions/`) are left
+alone; nothing uses them now, and logins made in them do not carry over.
 
 Set `OPENCHAMBER_CHROME_PROFILE` to put the base directory somewhere else.
 
@@ -115,20 +127,20 @@ automation.
 
 | Event | What happens |
 |---|---|
-| First action in a session | The host starts the service; the service starts that session's Chrome and attaches to it. |
+| First action on a profile | The host starts the service; the service starts that profile's Chrome and attaches to it. |
 | Ten idle minutes | The host stops the service. **The windows stay.** |
-| Next action | The service attaches to the session's window again — same tabs, same session. |
+| Next action | The service attaches to the profile's window again — same tabs, same logins. |
 | Service crashes or is killed | Same: the windows stay, the next action attaches to them. |
-| Set `OPENCHAMBER_CHROME_CLOSE_ON_STOP=1` | The service closes the windows it started when it stops, the old behaviour. |
+| Set `OPENCHAMBER_CHROME_CLOSE_ON_STOP=1` | The service closes the windows when it stops, asking Chrome to close itself so its logins are written out. |
 
 The provider stops Chrome from being killed with the service: playwright's
 launcher wants the opposite, and `scripts/patch-bundle.mjs` turns its signal
 handlers off at build time. `npm run test:survival` proves a window survives
 both SIGTERM and SIGKILL and that the next service adopts it.
 
-Each newly launched Chrome process receives a different plausible User-Agent
-from a rotating pool. Reconnecting to a Chrome window that survived a service
-restart leaves its existing User-Agent unchanged.
+Every profile runs the installed Chrome's own User-Agent and client hints: the
+provider does not override them. The User-Agent therefore stays the same across
+launches, and changes only when Chrome itself updates.
 
 If you launch Chrome on one of these profiles yourself, without the debug port,
 the provider cannot attach to it and says so: close that window and retry.
@@ -153,10 +165,9 @@ mv /tmp/cft/chrome-mac-arm64 "/Applications/Google Chrome for Testing.app"
 | Variable | Default | Meaning |
 |---|---|---|
 | `OPENCHAMBER_CHROME_PROFILE` | `~/OpenChamberChromeProfile` | Base directory for the profiles. |
-| `OPENCHAMBER_CHROME_DEBUG_PORT` | `9223` | CDP port for the default window; session windows take ports after it. |
+| `OPENCHAMBER_CHROME_DEBUG_PORT` | `9223` | CDP port for the default profile's window; `work` and `personal` take the next two ports. |
 | `OPENCHAMBER_CHROME_BIN` | unset | Chrome binary to use, overriding detection. |
 | `OPENCHAMBER_CHROME_LAUNCHER` | `open` on macOS, `spawn` elsewhere | How Chrome is started. `open` is what keeps windows from coming to the front. |
-| `OPENCHAMBER_CHROME_MAX_INSTANCES` | `8` | Windows kept at once; past this, the least recently used is closed. |
 | `OPENCHAMBER_CHROME_HEADLESS` | unset | `1` runs Chrome with no window at all, instead of a window that stays out of the way. |
 | `OPENCHAMBER_CHROME_CLOSE_ON_STOP` | unset | `1` closes the windows when the service stops, instead of leaving them. |
 
@@ -167,8 +178,8 @@ OpenChamber, not by you.
 
 ```bash
 npm run typecheck        # TypeScript, DOM and Node in one pass
-npm test                 # 29 checks against a real Chrome, no OpenChamber needed
-npm run test:sessions    # two sessions, two windows: isolation and tab-id routing
+npm test                 # 31 checks against a real Chrome, no OpenChamber needed
+npm run test:sessions    # three profiles: separate windows, shared windows per profile, logins across relaunches
 npm run test:focus       # a window never pulls itself in front of the user
 npm run test:reconnect   # a Chrome the provider did not start is adopted, not duplicated
 npm run test:survival    # windows outlive SIGTERM and SIGKILL, and are adopted again
@@ -184,8 +195,9 @@ Source layout:
 
 | Path | Role |
 |---|---|
-| `src/index.ts` | The loopback HTTP server, per-session queues, shutdown. |
-| `src/sessions.ts` | Which session gets which window, and the instance cap. |
+| `src/index.ts` | The loopback HTTP server, per-profile queues, shutdown. |
+| `src/sessions.ts` | The three profiles and their windows. |
+| `src/chats.ts` | Which profile each chat uses, kept across restarts. |
 | `src/driver.ts` | One session's Chrome: attach, tabs, downloads, watchers. |
 | `src/launcher.ts` | Starting Chrome without taking over the screen, and closing it. |
 | `src/actions.ts` | The ten actions, their session routing and answer shapes. |
@@ -208,6 +220,10 @@ which.
 
 **"A Chrome window is already using the OpenChamber profile…"** You opened that
 profile without the debug port. Quit that window, then retry.
+
+**"Port 9224 is answered by a Chrome that is not using the work profile…"** Another
+Chrome holds that debug port: a window from an earlier version, or one you started
+by hand. Close that window, or set `OPENCHAMBER_CHROME_DEBUG_PORT` to another base port.
 
 **Actions say Chrome is not running and nothing opens.** Check the panel under
 the extension rail for the last few log lines, and confirm Chrome exists at

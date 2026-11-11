@@ -1,156 +1,36 @@
-/**
- * The extension's own panel: the three profiles, each with one Chrome window,
- * and the chats that use them. A chat uses the default profile until it is
- * pointed at another one here.
- *
- * The address field opens a page in the default profile's window, the one a
- * person signs into.
- *
- * The panel is a sandboxed iframe. It reaches its service only through the host
- * proxy (`host.serviceRequest`), never a socket of its own.
- */
-import { connectHost } from '@openchamber/sdk';
-
-const host = connectHost();
-
-const address = document.getElementById('address');
-const go = document.getElementById('go');
-const status = document.getElementById('status');
-const profileList = document.getElementById('profiles');
-const chatList = document.getElementById('chats');
-const error = document.getElementById('error');
-
-const showError = (message) => {
-  if (!message) {
-    error.hidden = true;
-    error.textContent = '';
-    return;
+// Built by scripts/build.mjs from panel/src/main.js.
+"use strict";(()=>{var vt=Object.defineProperty;var Bt=(e,o,n)=>o in e?vt(e,o,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[o]=n;var rt=(e,o,n)=>Bt(e,typeof o!="symbol"?o+"":o,n);var T="openchamber.sdk";var q="data-oc-scrolling",Vt=`
+:root {
+  /* Quiet at rest like the app's own thumbs; hover gives a clear grab target. */
+  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 18%, transparent);
+  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 36%, transparent);
+  scrollbar-gutter: stable;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+:hover, [${q}] {
+  scrollbar-color: var(--oc-scrollbar-thumb) transparent;
+}
+/* Chromium's standard scrollbar properties otherwise override its pseudo-elements. */
+@supports selector(::-webkit-scrollbar) {
+  *, :hover, [${q}] { scrollbar-width: auto; scrollbar-color: auto; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+    min-width: 24px;
+    min-height: 24px;
   }
-  error.hidden = false;
-  error.textContent = message;
-};
-
-const call = async (method, path, body) => {
-  const result = await host.serviceRequest(
-    body === undefined ? { method, path } : { method, path, body: JSON.stringify(body) },
-  );
-  if (result.status === 401) throw new Error('The service refused the request (not approved yet?)');
-  return result.body ? JSON.parse(result.body) : null;
-};
-
-const profileRow = (entry) => {
-  const row = document.createElement('li');
-  const title = document.createElement('div');
-  const dot = document.createElement('span');
-  dot.className = `dot ${entry.chrome ?? 'stopped'}`;
-  const name = document.createElement('strong');
-  name.textContent = entry.name;
-  title.append(dot, name);
-  const detail = document.createElement('div');
-  detail.className = 'muted';
-  detail.textContent = entry.chrome === 'stopped' ? 'no window open yet' : `${entry.pages} tab(s) · port ${entry.port}`;
-  row.append(title, detail);
-  const lastLine = (entry.log ?? []).slice(-1)[0];
-  if (lastLine) {
-    const line = document.createElement('div');
-    line.className = 'muted small';
-    line.textContent = lastLine.replace(/^[0-9T:.Z-]+ /, '');
-    row.append(line);
-  }
-  if (entry.lastError) {
-    const line = document.createElement('div');
-    line.className = 'error';
-    line.textContent = entry.lastError;
-    row.append(line);
-  }
-  return row;
-};
-
-const chatRow = (chat, names) => {
-  const row = document.createElement('li');
-  row.className = 'chat';
-  const label = document.createElement('span');
-  label.className = 'small';
-  label.textContent = `Chat ${chat.sessionId.slice(0, 14)}…`;
-  label.title = chat.sessionId;
-  const choice = document.createElement('select');
-  choice.setAttribute('aria-label', 'Profile for this chat');
-  for (const name of names) {
-    const option = document.createElement('option');
-    option.value = name;
-    option.textContent = name;
-    option.selected = name === chat.profile;
-    choice.append(option);
-  }
-  choice.addEventListener('change', async () => {
-    choice.disabled = true;
-    try {
-      await call('POST', '/chat-profile', { sessionId: chat.sessionId, profile: choice.value });
-      showError('');
-    } catch (failure) {
-      showError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      choice.disabled = false;
-      await refresh();
-    }
-  });
-  row.append(label, choice);
-  return row;
-};
-
-/** Chat rows are rebuilt only when the chats change, so an open menu survives the refresh. */
-let renderedChats = null;
-
-const render = (state) => {
-  const profiles = state.profiles ?? [];
-  const chats = [...(state.chats ?? [])].sort((left, right) => left.sessionId.localeCompare(right.sessionId));
-  const windows = profiles.filter((entry) => entry.chrome !== 'stopped').length;
-  status.textContent = `${windows}/${profiles.length} profile window(s) open`;
-  profileList.replaceChildren(...profiles.map(profileRow));
-
-  const key = chats.map((chat) => `${chat.sessionId}=${chat.profile}`).join('|');
-  if (key === renderedChats) return;
-  renderedChats = key;
-  if (chats.length === 0) {
-    const empty = document.createElement('li');
-    empty.className = 'muted small';
-    empty.textContent = 'No chat has used the browser yet.';
-    chatList.replaceChildren(empty);
-    return;
-  }
-  const names = profiles.map((entry) => entry.name);
-  chatList.replaceChildren(...chats.map((chat) => chatRow(chat, names)));
-};
-
-const refresh = async () => {
-  try {
-    render(await call('GET', '/state'));
-    showError('');
-  } catch (failure) {
-    showError(failure instanceof Error ? failure.message : String(failure));
-  }
-};
-
-go.addEventListener('click', async () => {
-  const target = address.value.trim();
-  if (target.length === 0) return;
-  go.disabled = true;
-  try {
-    await call('POST', '/navigate', { url: target });
-    showError('');
-  } catch (failure) {
-    showError(failure instanceof Error ? failure.message : String(failure));
-  } finally {
-    go.disabled = false;
-    await refresh();
-  }
-});
-
-address.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') go.click();
-});
-
-void refresh();
-setInterval(() => {
-  void refresh();
-}, 4000);
+  :hover::-webkit-scrollbar-thumb, [${q}]::-webkit-scrollbar-thumb { background: var(--oc-scrollbar-thumb); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--oc-scrollbar-thumb-hover); }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+}
+@media (forced-colors: active) {
+  *, :hover, [${q}] { scrollbar-color: auto; }
+  ::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background: CanvasText; }
+}
+`;function jt(e){let o=e.documentElement;if(o.hasAttribute("data-oc-scrollbar-activity"))return;o.setAttribute("data-oc-scrollbar-activity","");let n=new WeakMap;e.addEventListener("scroll",d=>{let l=d.target===e?o:d.target;if(!(l instanceof Element))return;l.hasAttribute("data-oc-scrolling")||l.setAttribute("data-oc-scrolling","");let u=n.get(l);u!==void 0&&clearTimeout(u),n.set(l,setTimeout(()=>{n.delete(l),l.removeAttribute("data-oc-scrolling")},1e3))},{capture:!0,passive:!0})}var $t=`(${jt.toString()})(document);`;var it=/^[a-z][a-z0-9-]{0,39}$/;var ot=e=>Object(e)===e&&!Array.isArray(e),Ae=(e,o)=>Object.keys(e).every(n=>o.includes(n)),nt=e=>String(e)===e&&e.length>=1&&e.length<=60,st=e=>String(e)===e&&e.length>=1&&e.length<=80,ct=e=>{if(!Array.isArray(e)||e.length>4)return!1;let o=new Set;for(let n of e){if(!ot(n)||!it.test(n.id)||!nt(n.label)||n.disabled!==void 0&&n.disabled!==!0&&n.disabled!==!1||o.has(n.id))return!1;if(o.add(n.id),n.kind==="button"){if(!Ae(n,["kind","id","label","disabled"]))return!1;continue}if(n.kind!=="select"||!Ae(n,["kind","id","label","value","options","disabled"])||!st(n.value)||!Array.isArray(n.options)||n.options.length<1||n.options.length>16)return!1;let d=new Set;for(let l of n.options){if(!ot(l)||!Ae(l,["value","label"])||!st(l.value)||!nt(l.label)||d.has(l.value))return!1;d.add(l.value)}if(!d.has(n.value))return!1}return!0};var Oe=e=>"bytes"in e?e.bytes.byteLength:e.content.length,at=(e,o)=>{if(e.path!==o.path||e.readOnly!==o.readOnly)return!1;if(e.encoding==="text"||o.encoding==="text")return e.encoding==="text"&&o.encoding==="text"&&e.content===o.content;if(e.bytes.byteLength!==o.bytes.byteLength)return!1;for(let n=0;n<e.bytes.byteLength;n+=1)if(e.bytes[n]!==o.bytes[n])return!1;return!0};var Et=/^[A-Za-z0-9_-]{1,80}$/;var _t=["left","right","top","bottom"];var lt=(e,o=0,n={remaining:16e3})=>{if(--n.remaining<0||o>=32)return!1;if(e===null)return!0;let d=Array.isArray(e)?e:Object(e)===e?Object.values(e):[];for(let l of d)if(!lt(l,o+1,n))return!1;return!0},fe=e=>{if(e===null||e===!0||e===!1)return!0;if(Array.isArray(e))return Object.keys(e).every(o=>/^(0|[1-9]\d*)$/.test(o)&&Number(o)<e.length)&&e.every(fe);if(Object(e)===e){let o=Object.getPrototypeOf(e);return(o===null||o===Object.prototype)&&Object.values(e).every(fe)}return String(e)===e||Number.isFinite(e)},Re=e=>{try{return String(e.id)!==e.id||!Et.test(e.id)||!Number.isFinite(e.anchor.x)||Math.abs(e.anchor.x)>1e5||!Number.isFinite(e.anchor.y)||Math.abs(e.anchor.y)>1e5||!Number.isFinite(e.anchor.width)||!Number.isFinite(e.anchor.height)||e.anchor.width<=0||e.anchor.height<=0||e.anchor.width>1e5||e.anchor.height>1e5||!Number.isInteger(e.width)||e.width<160||e.width>640||!Number.isInteger(e.height)||e.height<48||e.height>480||e.side!==void 0&&!_t.includes(e.side)||e.focus!==void 0&&e.focus!==!0&&e.focus!==!1||!lt(e.data)||!fe(e.data)?!1:JSON.stringify(e.data).length<=16e3}catch{return!1}};var St=["file","directory","other","missing"],he=e=>!!(e&&"sessionId"in e),Ue=e=>!!(e&&"sent"in e&&!("sessionId"in e));var pt=/^[0-9a-f]{7,64}$/i,Ie=e=>pt.test(e),ee=500,te=32e3,dt=16e3,ut=128,At=200,Ot=2e3,ft=16e3,Rt=80,mt=200,ht=16e3;var Ut=2e3;var Me=2e4,re=1024,oe=2e6;var ne=64e3,se=8e3,ye=4e3;var Ge=9e4;var It=999,Mt=1e4,$=500,yt=["HOST_UNAVAILABLE","HOST_TIMEOUT","HOST_REJECTED","DISCONNECTED","DISABLED","BAD_PATH","NO_INTEGRATION","NO_SERVICE","SERVICE_FAILED","REQUEST_FAILED","RESPONSE_TOO_LARGE","NO_SESSION","SESSION_BUSY","NOT_GRANTED","NO_DIRECTORY","NOT_FOUND","FILE_TOO_LARGE","DENIED","NO_MODEL","MODEL_FAILED","UNSUPPORTED"],Gt=["stopped","starting","ready","failed"],Jt=new Set(yt),Ct=e=>Jt.has(e),xt=e=>e&&Ct(e)?e:"HOST_REJECTED",b=e=>e===void 0?!1:e===null||e===!0||e===!1||String(e)===e?!0:Number(e)===e?Number.isFinite(e):Array.isArray(e)?e.every(b):Object(e)===e?Object.values(e).every(b):!1,Nt=e=>b(e)&&JSON.stringify(e).length<=ht,Tt=e=>e?.trim().slice(0,mt)??"",w=e=>{let o=e.id.trim().slice(0,ut),n=e.title.trim().slice(0,At),d=e.url.trim().slice(0,Ot),l=e.text?.trim().slice(0,ft),u=e.author?.trim().slice(0,Rt),p=e.kind==="pull"?"pull":"issue",f={providerId:e.providerId.trim(),id:o,title:n||o,url:d,kind:p};if(l&&(f.text=l),u&&(f.author=u),p==="pull"){let x=Tt(e.branches?.head),N=Tt(e.branches?.base);x&&N&&(f.branches={head:x,base:N})}return Nt(e.data)&&(f.data=e.data),f},Ce=e=>{let o=w(e);return e.projectId&&(o.projectId=e.projectId),e.navigation&&(o.navigation=e.navigation),e.worktree&&(o.worktree=e.worktree),o},xe=e=>{let o={text:e.text.trim().slice(0,dt)};return e.send&&(o.send=!0),o},Ne=e=>e===null||!Number.isFinite(e)?null:Math.min(It,Math.max(0,Math.round(e))),Pe=e=>Number.isFinite(e)?Math.min(Mt,Math.max(0,Math.ceil(e))):0;var H=e=>e.length>0&&e.length<=re&&!e.includes("\0")&&!e.includes("\\");var ie=e=>!e.startsWith("/")||e.includes("\0")||e.includes("\\")||e.includes("://")||e.length>Ut?!1:!e.split("/").some(n=>n==="."||n===".."),Wt=new Set(Gt),Le=e=>!!(e&&"status"in e&&Wt.has(String(e.status))&&!("body"in e)),ce=e=>!!(e&&"status"in e&&"body"in e&&Number.isInteger(e.status)),ge=e=>!!(e&&"content"in e&&String(e.content)===e.content),be=e=>!!(e&&"written"in e&&e.written===!0),we=e=>!!(e&&"entries"in e&&Array.isArray(e.entries)),Kt=new Set(St),He=e=>!!(e&&"kind"in e&&"size"in e&&Kt.has(String(e.kind))&&Number.isFinite(e.size)),De=e=>!!(e&&"text"in e&&String(e.text)===e.text&&!("status"in e)),Yt=new Set(["workspace","shells","ready","directory","session","connection","settings","session-lifecycle","item","resolve","action","status-control-event","popover-closed","file-open","file-snapshot","file-saved"]),zt=e=>Object(e)===e?e:null,me=e=>String(e)===e&&e.length>0,Qt=e=>{if(!me(e.id))return null;if(e.ok===!0){let o={channel:T,v:1,type:"result",id:e.id,ok:!0};return Object(e.payload)===e.payload&&(o.payload=e.payload),o}return e.ok===!1&&me(e.error)?{channel:T,v:1,type:"result",id:e.id,ok:!1,error:e.error,code:xt(me(e.code)?e.code:void 0)}:null},Xe=e=>{let o=zt(e);return!o||o.channel!==T||o.v!==1?null:o.type==="result"?Qt(o):!Yt.has(String(o.type))||Object(o.payload)!==o.payload?null:o};var Pt=e=>"key"in e&&"metaKey"in e&&"ctrlKey"in e,Zt=e=>(e.metaKey||e.ctrlKey)&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==="s",c=class extends Error{constructor(n,d){super(d);rt(this,"code");this.name="HostRequestError",this.code=n}},Lt=()=>Promise.reject(new c("BAD_PATH",'Request path must start with "/" and stay on the declared origin.')),ae=()=>Promise.reject(new c("BAD_PATH",`File path must be 1 to ${re} characters without NUL or backslash.`)),Ee=e=>{if(e!==void 0){if(Object(e)!==e||Array.isArray(e)||e.scope!==void 0&&e.scope!=="instance"&&e.scope!=="device")throw new c("HOST_REJECTED",'Storage scope must be "instance" or "device".');return e.scope==="device"?"device":void 0}},_=e=>(e.value+=1,`oc-${e.value}`),Ve=(e={})=>{let o=e.target??("window"in globalThis?window:null);if(!o)throw new c("HOST_UNAVAILABLE","No window. connectHost runs in a browser frame.");let n=e.acceptSource??(t=>t===o.parent),d=e.requestTimeoutMs??Me,l=new Set,u=new Set,p=new Set,f=new Set,x=new Set,N=new Set,X=new Set,J=new Set,W=new Set,F=null,k=null,K=new Set,Y=new Set,v=null,B=null,Se=!1,P=new Map,L=new Map,g=new Map,G=!1,E={value:0},a=null,C=null,V=!1,j=!1,$e=null,Je=t=>t?{sessionId:t.id,phase:t.busy?"started":"completed"}:null,M=t=>{o.parent.postMessage(t,"*")},U=(t,r)=>{for(let s of t)try{s(r)}catch(i){console.error(i)}},We=t=>{if(!(t instanceof MessageEvent)||!n(t.source))return;let r=Xe(t.data);if(!r)return;if(r.type==="workspace"){let i=L.get(r.payload.subscriptionId);i&&U([i],r.payload.snapshot);return}if(r.type==="shells"){let i=g.get(r.payload.subscriptionId);i&&U([i],r.payload.snapshot);return}if(r.type==="ready"){a=r.payload,C=Je(r.payload.session),U(l,r.payload),U(u,r.payload.directory),U(p,r.payload.session),C&&U(f,C),U(x,r.payload.connection),U(N,r.payload.settings),U(X,r.payload.item);return}if(r.type==="directory"){a&&(a={...a,directory:r.payload.directory}),U(u,r.payload.directory);return}if(r.type==="session"){a&&(a={...a,session:r.payload.session}),r.payload.session?C?.sessionId!==r.payload.session.id&&(C=Je(r.payload.session)):C=null,U(p,r.payload.session);return}if(r.type==="session-lifecycle"){C=r.payload,U(f,r.payload);return}if(r.type==="connection"){a&&(a={...a,connection:r.payload.connection}),U(x,r.payload.connection);return}if(r.type==="settings"){a&&(a={...a,settings:r.payload.settings}),U(N,r.payload.settings);return}if(r.type==="item"){a&&(a={...a,item:r.payload.item}),U(X,r.payload.item);return}if(r.type==="status-control-event"){U(J,r.payload);return}if(r.type==="popover-closed"){U(W,r.payload);return}if(r.type==="action"){let i=A=>{G||M({channel:T,v:1,type:"action-result",id:r.id,payload:A})},O=k;if(!O){i({ok:!1,error:"This extension does not handle background actions."});return}Promise.resolve().then(()=>O(r.payload)).then(()=>i({ok:!0}),A=>{let h=(A instanceof Error?A.message:String(A)).trim();i({ok:!1,error:(h||"Action failed.").slice(0,$)})});return}if(r.type==="file-open"){let i=r.payload;if(B&&at(B,i))return;B=i,U(K,r.payload);return}if(r.type==="file-saved"){U(Y,r.payload.version);return}if(r.type==="file-snapshot"){let i=h=>{G||M({channel:T,v:1,type:"file-snapshot-result",id:r.id,payload:h})},O=h=>i({error:(h.trim()||"Could not read the edited file.").slice(0,$)}),A=v;if(!A){O("This extension does not edit files.");return}Promise.resolve().then(()=>A(r.payload.purpose)).then(h=>{if(Oe(h)>2e7){O(`The file is over ${2e7} ${"bytes"in h?"bytes":"characters"}.`);return}if(h.version.length>256){O(`The snapshot version is over ${256} characters.`);return}i({snapshot:"bytes"in h?{bytes:h.bytes,version:h.version}:{content:h.content,version:h.version}})},h=>O(h instanceof Error?h.message:String(h)));return}if(r.type==="resolve"){let i=A=>{M({channel:T,v:1,type:"resolve-result",id:r.id,payload:A})},O=F;if(!O){i({error:"This extension does not resolve commands."});return}Promise.resolve().then(()=>O(r.payload)).then(A=>i({item:A?w(A):null}),A=>{let h=(A instanceof Error?A.message:String(A)).trim();i({error:(h||"Command failed.").slice(0,$)})});return}let s=P.get(r.id);if(s){if(clearTimeout(s.timer),P.delete(r.id),r.ok){s.resolve(r.payload);return}s.reject(new c(r.code,r.error))}};o.addEventListener("message",We),M({channel:T,v:1,type:"hello"});let I=(t,r=d)=>G||o.parent===o?Promise.reject(new c("HOST_UNAVAILABLE","No host frame. This page is not in an iframe.")):new Promise((s,i)=>{let O=setTimeout(()=>{P.delete(t.id),i(new c("HOST_TIMEOUT","Host did not answer in time."))},r);P.set(t.id,{resolve:s,reject:i,timer:O}),M(t)}),R=t=>I(t).then(()=>{}),m={channel:T,v:1},pe=t=>{!G&&o.parent!==o&&M(t)},Ke=()=>pe({...m,type:"file-save"}),Ye=t=>{!Pt(t)||!Zt(t)||(t.preventDefault(),Ke())},ze=t=>{!Pt(t)||t.key!=="Escape"||a?.surface!=="popover"||!a.popover||(t.preventDefault(),et(a.popover.id,"escape").catch(()=>{}))},z=()=>{let t=a?.surface==="popover"?a.popover:void 0;if(!t)return;let r=V||j;$e!==r&&($e=r,tt(t.id,r).catch(()=>{}))},Q=()=>{a?.surface!=="popover"||V||(V=!0,z())},Qe=t=>{a?.surface!=="popover"||t.relatedTarget!==null||!V||(V=!1,z())},Ze=()=>{a?.surface!=="popover"||j||(j=!0,z())},qe=()=>{a?.surface!=="popover"||!j||(j=!1,z())},y=(t,r=1024)=>{if(!t.trim()||t.length>r)throw new c("HOST_REJECTED",`Identity must contain 1 to ${r} characters.`)},de=async t=>{t.kind!=="projects"&&y(t.projectId);let r=await I({...m,type:"workspace-read",id:_(E),payload:t});if(!r||!("kind"in r)||!("state"in r)||r.kind!==t.kind)throw new c("HOST_REJECTED","Host did not return workspace data.");return r},ue=async(t,r)=>{t.kind!=="projects"&&y(t.projectId);let s=_(E);L.set(s,r);try{await R({...m,type:"workspace-subscribe",id:_(E),payload:{subscriptionId:s,query:t}})}catch(i){throw L.delete(s),G||M({...m,type:"workspace-unsubscribe",id:_(E),payload:{subscriptionId:s}}),i}return()=>{!L.delete(s)||G||M({...m,type:"workspace-unsubscribe",id:_(E),payload:{subscriptionId:s}})}},kt=async(t,r)=>{t.kind==="session"&&y(t.sessionId),t.kind==="project"&&y(t.projectId);let s=_(E);g.set(s,r);try{await R({...m,type:"shells-subscribe",id:_(E),payload:{subscriptionId:s,scope:t}})}catch(i){throw g.delete(s),G||M({...m,type:"shells-unsubscribe",id:_(E),payload:{subscriptionId:s}}),i}return()=>{!g.delete(s)||G||M({...m,type:"shells-unsubscribe",id:_(E),payload:{subscriptionId:s}})}},Z=async t=>{if("key"in t&&(t.key.length===0||t.key.length>128))throw new c("HOST_REJECTED","Storage key must contain 1 to 128 characters.");if(t.op==="set"&&!b(t.value))throw new c("HOST_REJECTED","Storage values must be JSON.");if(t.op==="set"&&new TextEncoder().encode(JSON.stringify(t.value)).length>65536)throw new c("HOST_REJECTED","Storage value exceeds 64 KiB.");if(t.scope==="device"&&a?.features?.deviceStorage!==!0)throw new c("UNSUPPORTED","This host does not support device storage.");let r=await I({...m,type:"storage",id:_(E),payload:t});if(!r||!("storage"in r)||r.op!==t.op)throw new c("HOST_REJECTED","Host did not return storage data.");return r},et=(t,r)=>a?.features?.popovers!==!0&&!(a?.surface==="popover"&&a.popover?.id===t)?Promise.reject(new c("UNSUPPORTED","This host does not support popovers.")):R({...m,type:"popover-close",id:_(E),payload:r?{id:t,reason:r}:{id:t}}),tt=(t,r)=>a?.features?.popovers!==!0&&!(a?.surface==="popover"&&a.popover?.id===t)?Promise.reject(new c("UNSUPPORTED","This host does not support popovers.")):R({...m,type:"popover-anchor",id:_(E),payload:{id:t,active:r}});return o.addEventListener("keydown",ze,!0),o.addEventListener("pointerover",Q),o.addEventListener("pointermove",Q),o.addEventListener("pointerout",Qe),o.addEventListener("focus",Ze),o.addEventListener("blur",qe),{onAction:t=>(k=t,()=>{k===t&&(k=null)}),listProjects:async()=>{let t=await de({kind:"projects"});if(t.kind!=="projects")throw new c("HOST_REJECTED","Expected projects.");return t},listWorktrees:async t=>{let r=await de({kind:"worktrees",projectId:t});if(r.kind!=="worktrees")throw new c("HOST_REJECTED","Expected worktrees.");return r},listSessions:async t=>{let r=await de({kind:"sessions",projectId:t});if(r.kind!=="sessions")throw new c("HOST_REJECTED","Expected sessions.");return r},onProjects:t=>ue({kind:"projects"},r=>{r.kind==="projects"&&t(r)}),onWorktrees:(t,r)=>ue({kind:"worktrees",projectId:t},s=>{s.kind==="worktrees"&&r(s)}),onSessions:(t,r)=>ue({kind:"sessions",projectId:t},s=>{s.kind==="sessions"&&r(s)}),onRunningShells:(t,r)=>kt(t,r),readShellOutput:async(t,r)=>{y(t,128);let s=r?.cursor;if(s!==void 0&&(!Number.isInteger(s)||s<0))throw new c("HOST_REJECTED","Shell output cursor must be a non-negative integer.");let i=r?.tailBytes;if(i!==void 0&&(!Number.isInteger(i)||i<1||i>65536))throw new c("HOST_REJECTED",`Shell output tailBytes must be an integer between 1 and ${65536}.`);let A=await I({...m,type:"shell-output",id:_(E),payload:{shellId:t,cursor:s,tailBytes:i}});if(!A||typeof A.output!="string"||!Number.isFinite(A.cursor))throw new c("HOST_REJECTED","Host did not return shell output.");return A},stopShell:async t=>{if(y(t,128),(await I({...m,type:"shell-stop",id:_(E),payload:{shellId:t}}))?.stopped!==!0)throw new c("HOST_REJECTED","Host did not stop the shell.");return{stopped:!0}},openSession:async t=>{y(t),await R({...m,type:"open-session",id:_(E),payload:{sessionId:t}})},storage:{get:async(t,r)=>{let s=Ee(r),i={op:"get",key:t};s&&(i.scope=s);let O=await Z(i);return O.op==="get"&&O.found?O.value:void 0},set:async(t,r,s)=>{let i=Ee(s),O={op:"set",key:t,value:r};i&&(O.scope=i),await Z(O)},delete:async(t,r)=>{let s=Ee(r),i={op:"delete",key:t};s&&(i.scope=s),await Z(i)},keys:async t=>{let r=Ee(t),s={op:"keys"};r&&(s.scope=r);let i=await Z(s);if(i.op!=="keys")throw new c("HOST_REJECTED","Expected storage keys.");return i.keys}},onReady:t=>(l.add(t),a&&t(a),()=>{l.delete(t)}),onDirectory:t=>(u.add(t),a&&t(a.directory),()=>{u.delete(t)}),onSession:t=>(p.add(t),a&&t(a.session),()=>{p.delete(t)}),onSessionLifecycle:t=>(f.add(t),C&&t(C),()=>{f.delete(t)}),onConnection:t=>(x.add(t),a&&t(a.connection),()=>{x.delete(t)}),onSettings:t=>(N.add(t),a&&t(a.settings),()=>{N.delete(t)}),onItem:t=>(X.add(t),a&&t(a.item),()=>{X.delete(t)}),onStatusControl:t=>(J.add(t),()=>{J.delete(t)}),onPopoverClosed:t=>(W.add(t),()=>{W.delete(t)}),setStatusControls:t=>a?.features?.statusControls!==!0?Promise.reject(new c("UNSUPPORTED","This host does not support status controls.")):ct(t)?R({...m,type:"status-controls",id:_(E),payload:{controls:t}}):Promise.reject(new c("HOST_REJECTED","Status controls must have unique bounded ids and valid selected options.")),openPopover:t=>a?.features?.popovers!==!0?Promise.reject(new c("UNSUPPORTED","This host does not support popovers.")):Re(t)?R({...m,type:"popover-open",id:_(E),payload:t}):Promise.reject(new c("HOST_REJECTED","Popover requests need bounded geometry and JSON data.")),closePopover:et,setPopoverAnchorActive:tt,onResolve:t=>(F=t,()=>{F===t&&(F=null)}),toast:t=>{let r=t.message.trim();return!r||r.length>ee?Promise.reject(new c("HOST_REJECTED",`Toast message must contain 1 to ${ee} characters.`)):t.copy&&t.copy!==!0&&(!t.copy.text.length||t.copy.text.length>te)?Promise.reject(new c("HOST_REJECTED",`Toast copy text must contain 1 to ${te} characters.`)):R({channel:T,v:1,type:"toast",id:_(E),payload:{...t,message:r}})},openUrl:t=>R({channel:T,v:1,type:"open-url",id:_(E),payload:{url:t}}),openCommit:t=>Ie(t)?R({channel:T,v:1,type:"open-commit",id:_(E),payload:{sha:t}}):Promise.reject(new c("HOST_REJECTED","Commit id must be 7 to 64 hex characters.")),openSurface:t=>R({channel:T,v:1,type:"open-surface",id:_(E),payload:{surfaceId:t}}),writeClipboard:t=>R({channel:T,v:1,type:"clipboard-write",id:_(E),payload:{text:t}}),compose:t=>R({channel:T,v:1,type:"compose",id:_(E),payload:t}),attach:t=>R({channel:T,v:1,type:"attach",id:_(E),payload:w(t)}),startSession:async t=>{t.projectId!==void 0&&y(t.projectId);let r=t.worktree;r&&r!==!0&&(r.kind==="existing"?y(r.directory):(r.name!==void 0&&y(r.name,200),r.baseBranch!==void 0&&y(r.baseBranch,200)));let s=await I({channel:T,v:1,type:"start-session",id:_(E),payload:Ce(t)},e.requestTimeoutMs??18e4);if(!he(s))throw new c("HOST_REJECTED","Host did not return a session.");return s},prompt:t=>I({channel:T,v:1,type:"prompt",id:_(E),payload:xe(t)}).then(r=>{if(!Ue(r))throw new c("HOST_REJECTED","Host did not return a prompt result.");return r}),sessionLink:t=>R({channel:T,v:1,type:"session-link",id:_(E),payload:w(t)}),close:()=>R({channel:T,v:1,type:"close",id:_(E)}),oauthStart:()=>R({channel:T,v:1,type:"oauth-start",id:_(E)}),oauthDisconnect:()=>R({channel:T,v:1,type:"oauth-disconnect",id:_(E)}),request:t=>(ie(t.path)?I({channel:T,v:1,type:"request",id:_(E),payload:t}):Lt()).then(r=>{if(!ce(r))throw new c("HOST_REJECTED","Host request result was empty.");return r}),serviceRequest:t=>(ie(t.path)?I({channel:T,v:1,type:"service-request",id:_(E),payload:t}):Lt()).then(r=>{if(!ce(r))throw new c("HOST_REJECTED","Host service request result was empty.");return r}),serviceStatus:()=>I({channel:T,v:1,type:"service-status",id:_(E)}).then(t=>{if(!Le(t))throw new c("HOST_REJECTED","Host did not return service status.");return t}),readFile:t=>(H(t)?I({channel:T,v:1,type:"file-read",id:_(E),payload:{path:t}}):ae()).then(r=>{if(!ge(r))throw new c("HOST_REJECTED","Host did not return file content.");return r}),writeFile:(t,r)=>H(t)?r.length>oe?Promise.reject(new c("FILE_TOO_LARGE",`Content is over ${oe} characters.`)):I({channel:T,v:1,type:"file-write",id:_(E),payload:{path:t,content:r}}).then(s=>{if(!be(s))throw new c("HOST_REJECTED","Host did not confirm the write.");return s}):ae(),listDir:t=>(H(t)?I({channel:T,v:1,type:"file-list",id:_(E),payload:{path:t}}):ae()).then(r=>{if(!we(r))throw new c("HOST_REJECTED","Host did not return directory entries.");return r}),stat:t=>(H(t)?I({channel:T,v:1,type:"file-stat",id:_(E),payload:{path:t}}):ae()).then(r=>{if(!He(r))throw new c("HOST_REJECTED","Host did not return file status.");return r}),generate:t=>{let r=t.prompt.trim(),s=t.system?.trim();if(r.length===0||r.length>ne)return Promise.reject(new c("HOST_REJECTED",`Prompt must be 1 to ${ne} characters.`));if(s!==void 0&&(s.length===0||s.length>se))return Promise.reject(new c("HOST_REJECTED",`System prompt must be 1 to ${se} characters.`));let i=t.maxOutputTokens===void 0?void 0:Math.min(ye,Math.max(1,Math.floor(t.maxOutputTokens)));if(i!==void 0&&!Number.isFinite(i))return Promise.reject(new c("HOST_REJECTED","maxOutputTokens must be a number."));let O={prompt:r};return s!==void 0&&(O.system=s),i!==void 0&&(O.maxOutputTokens=i),I({channel:T,v:1,type:"generate",id:_(E),payload:O},e.requestTimeoutMs??Ge).then(A=>{if(!De(A))throw new c("HOST_REJECTED","Host did not return generated text.");return A})},setBadge:t=>R({channel:T,v:1,type:"badge",id:_(E),payload:{count:Ne(t)}}),setHeight:t=>R({channel:T,v:1,type:"resize",id:_(E),payload:{height:Pe(t)}}),onFileOpen:t=>(K.add(t),Se||(Se=!0,o.addEventListener("keydown",Ye,!0)),B&&t(B),()=>{K.delete(t)}),onFileSnapshot:t=>(v=t,()=>{v===t&&(v=null)}),onFileSaved:t=>(Y.add(t),()=>{Y.delete(t)}),reportFileChange:t=>pe({...m,type:"file-change",payload:{dirty:t.dirty,edited:t.edited}}),requestFileSave:Ke,reportFileUnsupported:()=>pe({...m,type:"file-unsupported"}),dispose:()=>{for(let t of L.keys())M({...m,type:"workspace-unsubscribe",id:_(E),payload:{subscriptionId:t}});L.clear();for(let t of g.keys())M({...m,type:"shells-unsubscribe",id:_(E),payload:{subscriptionId:t}});g.clear(),G=!0,F=null,k=null,v=null,K.clear(),Y.clear(),Se&&o.removeEventListener("keydown",Ye,!0),o.removeEventListener("message",We),o.removeEventListener("keydown",ze,!0),o.removeEventListener("pointerover",Q),o.removeEventListener("pointermove",Q),o.removeEventListener("pointerout",Qe),o.removeEventListener("focus",Ze),o.removeEventListener("blur",qe);for(let t of P.values())clearTimeout(t.timer),t.reject(new c("HOST_UNAVAILABLE","Host client was disposed."));P.clear(),l.clear(),u.clear(),p.clear(),f.clear(),x.clear(),N.clear(),X.clear(),J.clear(),W.clear()}}};var wt=["browser.open","browser.snapshot","browser.click","browser.type","browser.scroll","browser.back","browser.forward","browser.inspect","browser.capture","browser.resize"];var Gr=new Set(wt);var Ht=["none","agent","user"];var xr=new Set(Ht);var qt=Ve(),Ft=document.getElementById("address"),le=document.getElementById("go"),er=document.getElementById("status"),tr=document.getElementById("profiles"),Dt=document.getElementById("chats"),_e=document.getElementById("error"),D=e=>{if(!e){_e.hidden=!0,_e.textContent="";return}_e.hidden=!1,_e.textContent=e},je=async(e,o,n)=>{let d=await qt.serviceRequest(n===void 0?{method:e,path:o}:{method:e,path:o,body:JSON.stringify(n)});if(d.status===401)throw new Error("The service refused the request (not approved yet?)");return d.body?JSON.parse(d.body):null},rr=e=>{let o=document.createElement("li"),n=document.createElement("div"),d=document.createElement("span");d.className=`dot ${e.chrome??"stopped"}`;let l=document.createElement("strong");l.textContent=e.name,n.append(d,l);let u=document.createElement("div");u.className="muted",u.textContent=e.chrome==="stopped"?"no window open yet":`${e.pages} tab(s) \xB7 port ${e.port}`,o.append(n,u);let p=(e.log??[]).slice(-1)[0];if(p){let f=document.createElement("div");f.className="muted small",f.textContent=p.replace(/^[0-9T:.Z-]+ /,""),o.append(f)}if(e.lastError){let f=document.createElement("div");f.className="error",f.textContent=e.lastError,o.append(f)}return o},or=(e,o)=>{let n=document.createElement("li");n.className="chat";let d=document.createElement("span");d.className="small",d.textContent=`Chat ${e.sessionId.slice(0,14)}\u2026`,d.title=e.sessionId;let l=document.createElement("select");l.setAttribute("aria-label","Profile for this chat");for(let u of o){let p=document.createElement("option");p.value=u,p.textContent=u,p.selected=u===e.profile,l.append(p)}return l.addEventListener("change",async()=>{l.disabled=!0;try{await je("POST","/chat-profile",{sessionId:e.sessionId,profile:l.value}),D("")}catch(u){D(u instanceof Error?u.message:String(u))}finally{l.disabled=!1,await Te()}}),n.append(d,l),n},Xt=null,nr=e=>{let o=e.profiles??[],n=[...e.chats??[]].sort((p,f)=>p.sessionId.localeCompare(f.sessionId)),d=o.filter(p=>p.chrome!=="stopped").length;er.textContent=`${d}/${o.length} profile window(s) open`,tr.replaceChildren(...o.map(rr));let l=n.map(p=>`${p.sessionId}=${p.profile}`).join("|");if(l===Xt)return;if(Xt=l,n.length===0){let p=document.createElement("li");p.className="muted small",p.textContent="No chat has used the browser yet.",Dt.replaceChildren(p);return}let u=o.map(p=>p.name);Dt.replaceChildren(...n.map(p=>or(p,u)))},Te=async()=>{try{nr(await je("GET","/state")),D("")}catch(e){D(e instanceof Error?e.message:String(e))}};le.addEventListener("click",async()=>{let e=Ft.value.trim();if(e.length!==0){le.disabled=!0;try{await je("POST","/navigate",{url:e}),D("")}catch(o){D(o instanceof Error?o.message:String(o))}finally{le.disabled=!1,await Te()}}});Ft.addEventListener("keydown",e=>{e.key==="Enter"&&le.click()});Te();setInterval(()=>{Te()},4e3);})();

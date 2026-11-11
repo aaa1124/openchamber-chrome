@@ -11,26 +11,24 @@ browser: real rendering, real extensions-free profile, real logins if you sign
 in once.
 
 The extension folder is this whole repository; the built files it ships are
-`service/main.cjs`, `panel/`, `browsers.json` and `icon.svg`.
+`service/main.cjs`, `panel/main.js`, `browsers.json` and `icon.svg`. They are
+committed because OpenChamber installs extensions without building them.
 
 ## Install
 
-1. Build:
+The built files are committed, so OpenChamber can install the package as it
+is; no build step is needed on the machine that installs it.
 
-   ```bash
-   npm install
-   npm run build
-   ```
-
-2. In OpenChamber, open **Settings → Extensions**, add this folder, and approve
+1. In OpenChamber, open **Settings → Extensions** and add either the Git URL
+   `https://github.com/aaa1124/openchamber-chrome.git` or this folder. Approve
    the local service when asked. The service needs approval once; it runs with
    your full user rights, like every OpenChamber guest service.
 
-3. Open **Settings → General → OpenChamber Tools → Browser provider** and pick
+2. Open **Settings → General → OpenChamber Tools → Browser provider** and pick
    **Chrome**. The dropdown only lists installed and fully approved extensions,
-   so it stays disabled until step 2 is done.
+   so it stays disabled until step 1 is done.
 
-4. Ask an agent to open a page. The first action starts the service and Chrome:
+3. Ask an agent to open a page. The first action starts the service and Chrome:
 
    ```text
    Open https://example.com and tell me what is on it.
@@ -39,6 +37,14 @@ The extension folder is this whole repository; the built files it ships are
    Chrome opens with a page (not a blank window), the agent reads it, and the
    Chrome window stays there. The provider's own panel in the extension rail
    shows the current state, the tab count, and an address field.
+
+If you change the source, rebuild the two shipped bundles before adding the
+folder or reinstalling it:
+
+```bash
+npm install
+npm run build
+```
 
 ### What the agent drives
 
@@ -191,6 +197,10 @@ checks the answers — including the failure shapes, which reach the agent as
 instructions. It opens a real Chrome window while it runs. Every test picks its
 own debug port and profile, so it never disturbs a provider you have running.
 
+`npm run build` writes `service/main.cjs` and `panel/main.js`; both are
+committed because OpenChamber installs extensions without building them.
+Rebuild and commit them with any source change.
+
 Source layout:
 
 | Path | Role |
@@ -203,7 +213,7 @@ Source layout:
 | `src/actions.ts` | The ten actions, their session routing and answer shapes. |
 | `src/snapshot.ts` | The readers injected into the page. |
 | `src/env.ts` | Paths, ports, bounds. |
-| `panel/` | The extension's panel. |
+| `panel/src/main.js` | The extension's panel; bundled to `panel/main.js`. |
 
 The service is bundled with esbuild, not run from source: the host executes it
 with a bare Node runtime, so everything it imports must be inside the file.

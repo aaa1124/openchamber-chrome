@@ -6,8 +6,10 @@
  *   extension folder has no node_modules, so anything imported at runtime has
  *   to be in this file. CommonJS because playwright-core builds its transports
  *   with `require()` at runtime, which an ESM output cannot host.
- * - `panel/main.built.js`: a classic IIFE. A sandboxed iframe cannot load ESM,
- *   and the panel reaches its service through `@openchamber/sdk`.
+ * - `panel/main.js`: a classic IIFE. A sandboxed iframe cannot load ESM, and the
+ *   panel reaches its service through `@openchamber/sdk`. The source is
+ *   `panel/src/main.js` because the host installs extensions without building
+ *   them, so the built script has to sit where `panel/index.html` loads it.
  * - `browsers.json`: playwright-core reads its browser registry from this file
  *   at import time, resolved against the package root it was bundled into.
  * - `service/xdg-open`: playwright opens a URL through this helper on Linux;
@@ -19,7 +21,7 @@
  * and the host runs the service with a bare `node`, so importing them at
  * runtime would fail there anyway. Aliasing keeps the bundle self-contained.
  */
-import { copyFile, readFile, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,14 +68,14 @@ await build({
 await writeFile(serviceOutfile, patchBundle(await readFile(serviceOutfile, 'utf8')));
 
 await build({
-  entryPoints: [path.join(root, 'panel', 'main.js')],
-  outfile: path.join(root, 'panel', 'main.built.js'),
+  entryPoints: [path.join(root, 'panel', 'src', 'main.js')],
+  outfile: path.join(root, 'panel', 'main.js'),
   bundle: true,
   format: 'iife',
   platform: 'browser',
   target: 'es2020',
   minify: true,
-  banner: { js: '// Built by scripts/build.mjs from panel/main.js.' },
+  banner: { js: '// Built by scripts/build.mjs from panel/src/main.js.' },
   logLevel: 'warning',
 });
 
@@ -85,10 +87,16 @@ await copyFile(
   path.join(root, 'browsers.json'),
 );
 
-// The helper playwright shells out to for `openUrl` on Linux; linking it keeps
-// the paths derived from the bundle from pointing at nothing.
-const xdgOpen = path.join('node_modules', 'playwright-core', 'lib', 'xdg-open');
-await symlink(xdgOpen, path.join(root, 'service', 'xdg-open')).catch(() => undefined);
-await symlink(xdgOpen, path.join(root, 'xdg-open')).catch(() => undefined);
+// The helper playwright shells out to for `openUrl` on Linux. Copied rather
+// than linked so a git clone, which has no node_modules, still has the file
+// the path derived from the bundle points at.
+const xdgOpenSource = path.join(root, 'node_modules', 'playwright-core', 'lib', 'xdg-open');
+for (const destination of [path.join(root, 'service', 'xdg-open'), path.join(root, 'xdg-open')]) {
+  // An older checkout may have a symlink here; copyFile would follow it into
+  // node_modules, so replace the directory entry instead.
+  await rm(destination, { force: true });
+  await copyFile(xdgOpenSource, destination);
+  await chmod(destination, 0o755);
+}
 
-console.log('built service/main.cjs, panel/main.built.js, browsers.json and service/xdg-open');
+console.log('built service/main.cjs, panel/main.js, browsers.json and xdg-open');

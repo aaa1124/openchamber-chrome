@@ -29,5 +29,6 @@
 ## Build-specific constraints
 
 - `scripts/build.mjs` intentionally emits a self-contained CommonJS service (Playwright needs runtime `require()`), an IIFE panel bundle, and copied Playwright support files. Keep the optional-peer stubs for `chromium-bidi`, `electron`, and `playwright` when changing the bundle. Both `panel/main.js` and `service/main.cjs` are shipped from git, so rebuild and commit them with their sources.
+- Bump `version` in `package.json` (patch) with every shipped fix: an installed extension is updated only when its version differs, so a fix pushed without a bump never reaches an install.
 - `scripts/patch-bundle.mjs` removes Playwright's signal handlers so Chrome survives service termination; it deliberately fails the build if the expected Playwright code changes. Update that patch and `test:survival` together when upgrading Playwright.
 - When docs conflict with behavior, trust `package.json`, the build/test scripts, and source code; see `README.md` for installation and user-facing troubleshooting.

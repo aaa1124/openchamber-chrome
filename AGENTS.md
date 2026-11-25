@@ -22,6 +22,7 @@
 - A window the provider closes on purpose is asked to close itself over DevTools (`Browser.close`) and signalled only if it does not. A signal can lose cookies Chrome has not written out yet.
 - A debug port that answers with a Chrome not started on the profile is refused rather than attached to, since its tabs and logins would be someone else's.
 - Chrome windows intentionally outlive service shutdown so tabs and logins survive host idle stops and reconnects. `OPENCHAMBER_CHROME_CLOSE_ON_STOP=1` is the opt-in cleanup behavior; do not “fix” the default by killing Chrome on service stop.
+- Closing Chrome's last window does not quit it on macOS: the process stays with no window and unloads the profile. That Chrome answers its debug port but refuses a browser context (`Browser.setDownloadBehavior: Browser context management is not supported`), so `src/driver.ts` asks the port for one window (`PUT /json/new`) before attaching; do not remove that step or `connectOverCDP` fails for anyone who closed the window.
 - On macOS, `open -g` is the default launcher so provider windows never activate themselves; preserve this behavior and use `npm run test:focus` when changing launch or tab-fronting code.
 - The default profile root is `~/OpenChamberChromeProfile`; use `OPENCHAMBER_CHROME_PROFILE` and a non-conflicting `OPENCHAMBER_CHROME_DEBUG_PORT` for manual experiments. `OPENCHAMBER_CHROME_BIN=...` overrides Chrome discovery, and `OPENCHAMBER_CHROME_HEADLESS=1` suppresses visible windows.
 

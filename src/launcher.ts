@@ -51,6 +51,45 @@ export const probeDebugPort = async (port: number, timeoutMs = 1_500): Promise<s
   }
 };
 
+/**
+ * Whether the Chrome answering a debug port has a window open.
+ *
+ * Closing the last window does not quit Chrome on macOS: the process keeps
+ * running with no window and unloads the profile along with it. Such a Chrome
+ * still answers its debug port, but nothing can attach a browser context to it
+ * until a window loads the profile again — the host's client setup fails with
+ * "Browser context management is not supported", which is what Chrome answers
+ * for a profile that is not loaded. Null when the port cannot be asked.
+ */
+export const debugPortHasWindow = async (port: number): Promise<boolean | null> => {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1_500) });
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    if (!Array.isArray(body)) return null;
+    return body.some((target: unknown) => Object(target) === target && (target as { type?: unknown }).type === 'page');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Asks Chrome on a debug port for one window, which loads the profile again.
+ * `/json/new` takes PUT since Chrome 111, and the tab it opens is an ordinary
+ * tab of this profile — the same thing a browser context's `newPage` asks for.
+ */
+export const openWindow = async (port: number): Promise<boolean> => {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
+      method: 'PUT',
+      signal: AbortSignal.timeout(5_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
 /** Chrome writes the port it bound here, at the user-data-dir root. */
 export const readActivePort = (profile: string): number | null => {
   try {

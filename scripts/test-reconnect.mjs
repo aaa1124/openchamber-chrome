@@ -6,6 +6,11 @@
  * a second one on the same profile (which Chrome answers by handing the URL to
  * the first window and never listening on our port).
  *
+ * It also covers the Chrome a person left windowless: closing the last window
+ * does not quit Chrome on macOS, it unloads the profile with it, and a client
+ * attaching to that Chrome is refused a browser context until one window loads
+ * the profile again.
+ *
  *   node scripts/test-reconnect.mjs
  */
 import { spawn } from 'node:child_process';
@@ -15,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
+import { chromium } from 'playwright-core';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serviceEntry = path.join(root, 'service', 'main.cjs');
@@ -49,6 +55,39 @@ const probeDebugPort = async () => {
   try {
     const response = await fetch(`http://${HOST}:${DEBUG_PORT}/json/version`, { signal: AbortSignal.timeout(1_000) });
     return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+/** Tabs Chrome lists, or -1 when the port cannot be asked. */
+const countPageTargets = async () => {
+  try {
+    const response = await fetch(`http://${HOST}:${DEBUG_PORT}/json/list`, { signal: AbortSignal.timeout(1_000) });
+    if (!response.ok) return -1;
+    const list = await response.json();
+    return Array.isArray(list) ? list.filter((target) => target.type === 'page').length : -1;
+  } catch {
+    return -1;
+  }
+};
+
+/** Closes every window the way a person would, leaving Chrome itself running. */
+const closeEveryWindow = async () => {
+  const browser = await chromium.connectOverCDP(`http://${HOST}:${DEBUG_PORT}`);
+  for (const context of browser.contexts()) {
+    for (const page of context.pages()) await page.close().catch(() => undefined);
+  }
+  // A CDP client's `close` detaches; Chrome keeps running with no window.
+  await browser.close().catch(() => undefined);
+};
+
+/** Whether a bare CDP client gets in, i.e. whether the profile is still loaded. */
+const plainConnectWorks = async () => {
+  try {
+    const browser = await chromium.connectOverCDP(`http://${HOST}:${DEBUG_PORT}`);
+    await browser.close().catch(() => undefined);
+    return true;
   } catch {
     return false;
   }
@@ -126,6 +165,16 @@ const stop = async (child) => {
   });
 };
 
+const waitForHealth = async (timeoutMs = 20_000) =>
+  waitFor(async () => {
+    try {
+      const response = await request('GET', '/health');
+      return response.status === 200;
+    } catch {
+      return false;
+    }
+  }, timeoutMs);
+
 let chrome;
 let service;
 try {
@@ -142,14 +191,7 @@ try {
 
   // 2. The service starts and must attach, not launch.
   service = startService();
-  check('the service becomes healthy', await waitFor(async () => {
-    try {
-      const response = await request('GET', '/health');
-      return response.status === 200;
-    } catch {
-      return false;
-    }
-  }));
+  check('the service becomes healthy', await waitForHealth());
 
   const snapshot = await action('browser.snapshot', {});
   check('an action is answered from the running Chrome', snapshot.body?.ok === true, JSON.stringify(snapshot.body).slice(0, 300));
@@ -170,6 +212,36 @@ try {
   const after = await countChromeProcesses();
   check('browser.open works after reconnecting', opened.body?.ok === true, JSON.stringify(opened.body).slice(0, 300));
   check('the second window count is unchanged', after <= before + 1 && after > 0, `before ${before}, after ${after}`);
+
+  // 4. Every window closed: Chrome stays in the menu bar with its profile
+  //    unloaded, and a client attaching to that Chrome is refused a browser
+  //    context. The next service must give it a window instead of failing.
+  await closeEveryWindow();
+  check('no window is left in the adopted Chrome', await waitFor(async () => (await countPageTargets()) === 0));
+  check(
+    'a bare CDP client is refused once the profile is unloaded',
+    await waitFor(async () => !(await plainConnectWorks()), 20_000),
+  );
+
+  await stop(service);
+  service = startService();
+  check('the restarted service becomes healthy', await waitForHealth());
+
+  const windowless = await action('browser.open', { url: 'https://example.com' }, 'open-windowless');
+  const state2 = await request('GET', '/state');
+  const session2 = (state2.body?.profiles ?? []).find((entry) => entry.name === 'default') ?? {};
+  check(
+    'browser.open works on a Chrome that had no window',
+    windowless.body?.ok === true,
+    JSON.stringify(windowless.body).slice(0, 300),
+  );
+  check('the service reports a ready Chrome again', session2.chrome === 'ready', JSON.stringify(state2.body).slice(0, 240));
+  check(
+    'the service says it asked for a window',
+    (session2.log ?? []).some((line) => line.includes('no window left')),
+    JSON.stringify(session2.log ?? []).slice(0, 300),
+  );
+  check('that Chrome has a window again, and only the tab it opened', await waitFor(async () => (await countPageTargets()) === 1));
 
   await stop(service);
   service = undefined;

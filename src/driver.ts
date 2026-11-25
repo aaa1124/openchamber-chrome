@@ -25,8 +25,10 @@ import { WINDOW_MODE, type ProfileName, type ProfilePaths } from './env.ts';
 import {
   chromeError,
   chromeExited,
+  debugPortHasWindow,
   launchChrome,
   listenerUsesProfile,
+  openWindow,
   portListenerPid,
   probeDebugPort,
   quitChrome,
@@ -150,9 +152,20 @@ export class ChromeDriver {
       this.#state = 'stopped';
     }
     if (!this.#starting) {
-      this.#starting = this.#start().finally(() => {
-        this.#starting = null;
-      });
+      this.#starting = this.#start()
+        .catch((error: unknown) => {
+          // A start that dies outside the branches that name their reason — a
+          // protocol error while attaching, say — would otherwise leave the
+          // profile looking like it is still starting, forever.
+          if (this.#state === 'starting') {
+            this.#state = 'failed';
+            this.#lastError = describeError(error);
+          }
+          throw error;
+        })
+        .finally(() => {
+          this.#starting = null;
+        });
     }
     await this.#starting;
   }
@@ -180,6 +193,7 @@ export class ChromeDriver {
         throw chromeError('already-running', this.#lastError);
       }
       this.log(`reconnecting to the Chrome already listening on ${this.paths.port}`);
+      await this.#openWindowIfNeeded();
       await this.#attach(existing);
       return;
     }
@@ -204,8 +218,28 @@ export class ChromeDriver {
     await this.#attach(webSocketDebuggerUrl);
   }
 
+  /**
+   * Gives a Chrome that lost its last window one back.
+   *
+   * A Chrome whose last window is closed keeps running with no window and
+   * unloads the profile with it (`debugPortHasWindow`). Nothing can attach a
+   * browser context to that Chrome — Playwright's connect fails with
+   * "Browser context management is not supported", Chrome's answer for a profile
+   * that is not loaded — so one window is asked for first, which loads it again.
+   */
+  async #openWindowIfNeeded(): Promise<void> {
+    if ((await debugPortHasWindow(this.paths.port)) !== false) return;
+    this.log('that Chrome has no window left; asking it for one');
+    if (await openWindow(this.paths.port)) return;
+    this.#state = 'failed';
+    this.#lastError =
+      `Chrome is running on port ${this.paths.port} without a window, and did not open one. ` +
+      'Quit that Chrome from its menu, then try again.';
+    throw chromeError('launch-failed', this.#lastError);
+  }
+
   async #attach(webSocketDebuggerUrl: string): Promise<void> {
-    const browser = await chromium.connectOverCDP(webSocketDebuggerUrl);
+    const browser = await this.#connect(webSocketDebuggerUrl);
     this.#browser = browser;
     const context = browser.contexts()[0];
     if (!context) {
@@ -217,6 +251,23 @@ export class ChromeDriver {
     }
     this.#observe(browser, context);
     this.log(`attached to Chrome with ${context.pages().length} page(s)`);
+  }
+
+  /**
+   * Connects to Chrome, with one second chance for the window that closed
+   * between the check above and here: attaching needs a loaded profile, and a
+   * window is what loads it. Playwright closes the transport of a connect that
+   * failed, so the retry starts from nothing.
+   */
+  async #connect(webSocketDebuggerUrl: string): Promise<Browser> {
+    try {
+      return await chromium.connectOverCDP(webSocketDebuggerUrl);
+    } catch (error) {
+      if (!describeError(error).includes('Browser context management is not supported')) throw error;
+      this.log('Chrome refused a browser context because it has no window; asking it for one');
+      if (!(await openWindow(this.paths.port))) throw error;
+      return await chromium.connectOverCDP(webSocketDebuggerUrl);
+    }
   }
 
   #observe(browser: Browser, context: BrowserContext): void {

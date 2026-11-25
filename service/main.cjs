@@ -160394,6 +160394,28 @@ var probeDebugPort = async (port, timeoutMs = 1500) => {
     return null;
   }
 };
+var debugPortHasWindow = async (port) => {
+  try {
+    const response2 = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
+    if (!response2.ok) return null;
+    const body = await response2.json();
+    if (!Array.isArray(body)) return null;
+    return body.some((target) => Object(target) === target && target.type === "page");
+  } catch {
+    return null;
+  }
+};
+var openWindow = async (port) => {
+  try {
+    const response2 = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
+      method: "PUT",
+      signal: AbortSignal.timeout(5e3)
+    });
+    return response2.ok;
+  } catch {
+    return false;
+  }
+};
 var readActivePort = (profile) => {
   try {
     const raw = import_node_fs2.default.readFileSync(import_node_path3.default.join(profile, "DevToolsActivePort"), "utf8");
@@ -160599,7 +160621,13 @@ var ChromeDriver = class {
       this.#state = "stopped";
     }
     if (!this.#starting) {
-      this.#starting = this.#start().finally(() => {
+      this.#starting = this.#start().catch((error) => {
+        if (this.#state === "starting") {
+          this.#state = "failed";
+          this.#lastError = describeError(error);
+        }
+        throw error;
+      }).finally(() => {
         this.#starting = null;
       });
     }
@@ -160621,6 +160649,7 @@ var ChromeDriver = class {
         throw chromeError("already-running", this.#lastError);
       }
       this.log(`reconnecting to the Chrome already listening on ${this.paths.port}`);
+      await this.#openWindowIfNeeded();
       await this.#attach(existing);
       return;
     }
@@ -160642,8 +160671,25 @@ var ChromeDriver = class {
     }
     await this.#attach(webSocketDebuggerUrl);
   }
+  /**
+   * Gives a Chrome that lost its last window one back.
+   *
+   * A Chrome whose last window is closed keeps running with no window and
+   * unloads the profile with it (`debugPortHasWindow`). Nothing can attach a
+   * browser context to that Chrome — Playwright's connect fails with
+   * "Browser context management is not supported", Chrome's answer for a profile
+   * that is not loaded — so one window is asked for first, which loads it again.
+   */
+  async #openWindowIfNeeded() {
+    if (await debugPortHasWindow(this.paths.port) !== false) return;
+    this.log("that Chrome has no window left; asking it for one");
+    if (await openWindow(this.paths.port)) return;
+    this.#state = "failed";
+    this.#lastError = `Chrome is running on port ${this.paths.port} without a window, and did not open one. Quit that Chrome from its menu, then try again.`;
+    throw chromeError("launch-failed", this.#lastError);
+  }
   async #attach(webSocketDebuggerUrl) {
-    const browser = await chromium.connectOverCDP(webSocketDebuggerUrl);
+    const browser = await this.#connect(webSocketDebuggerUrl);
     this.#browser = browser;
     const context = browser.contexts()[0];
     if (!context) {
@@ -160655,6 +160701,22 @@ var ChromeDriver = class {
     }
     this.#observe(browser, context);
     this.log(`attached to Chrome with ${context.pages().length} page(s)`);
+  }
+  /**
+   * Connects to Chrome, with one second chance for the window that closed
+   * between the check above and here: attaching needs a loaded profile, and a
+   * window is what loads it. Playwright closes the transport of a connect that
+   * failed, so the retry starts from nothing.
+   */
+  async #connect(webSocketDebuggerUrl) {
+    try {
+      return await chromium.connectOverCDP(webSocketDebuggerUrl);
+    } catch (error) {
+      if (!describeError(error).includes("Browser context management is not supported")) throw error;
+      this.log("Chrome refused a browser context because it has no window; asking it for one");
+      if (!await openWindow(this.paths.port)) throw error;
+      return await chromium.connectOverCDP(webSocketDebuggerUrl);
+    }
   }
   #observe(browser, context) {
     this.#browser = browser;
